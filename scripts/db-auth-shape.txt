@@ -1,0 +1,46 @@
+IDENTITY_TABLES analytics_sessions, audiolab_sessions, chat_users, fcm_tokens, hq_members, kingschat_auth_sessions, profiles, user_favorites, user_groups, user_notifications, user_playlists, user_sessions, user_song_notes, whatsapp_users, zone_members
+TABLE analytics_sessions rows=10294
+  COLS id:text|raw_data:jsonb
+TABLE audiolab_sessions rows=418
+  COLS id:text|raw_data:jsonb
+TABLE chat_users rows=86646
+  COLS id:text|raw_data:jsonb
+TABLE fcm_tokens rows=3
+  COLS id:text|raw_data:jsonb
+TABLE hq_members rows=134
+  COLS id:text|user_id:text|role:text|created_at:timestamp without time zone|raw_data:jsonb|status:text|user_name:text|hq_group_id:text|user_email:text|joined_at:timestamp with time zone
+TABLE kingschat_auth_sessions rows=51
+  COLS id:text|raw_data:jsonb
+TABLE profiles rows=701
+  COLS id:text|email:text|first_name:text|last_name:text|role:text|has_hq_access:boolean|avatar_url:text|created_at:timestamp without time zone|raw_data:jsonb|kingschat_id:text|profile_completed:boolean|updated_at:text
+TABLE user_favorites rows=44
+  COLS id:text|user_id:text|song_id:text|created_at:timestamp without time zone|raw_data:jsonb
+TABLE user_groups rows=19
+  COLS id:text|raw_data:jsonb
+TABLE user_notifications rows=94874
+  COLS id:text|raw_data:jsonb
+TABLE user_playlists rows=54
+  COLS id:text|user_id:text|name:text|songs:jsonb|created_at:timestamp without time zone|raw_data:jsonb|title:text|song_ids:jsonb|is_public:boolean|updated_at:timestamp with time zone
+TABLE user_sessions rows=543
+  COLS id:text|raw_data:jsonb
+TABLE user_song_notes rows=17
+  COLS id:text|raw_data:jsonb
+TABLE whatsapp_users rows=3
+  COLS id:text|raw_data:jsonb
+TABLE zone_members rows=0
+  COLS id:text|user_id:text|zone_id:text|role:text|created_at:timestamp without time zone|raw_data:jsonb|status:text
+PROFILE_SAMPLE id=0D6ffcQifnQx9M3A48joPFlvHxv1 email=allenpolope@gmail.com role=user hq=false kc=null keys=id,role,email,last_name,created_at,first_name,updated_at,kingschat_id,has_hq_access,profile_completed
+PROFILE_SAMPLE id=0DRMZ2uV0abdu19yreVPnma8MpI3 email=igbasanmii@gmail.com role=user hq=false kc=null keys=id,role,email,church,gender,region,birthday,last_name,updatedAt,created_at,first_name,updated_at,designation,middle_name,kingschat_id,phone_number,administration,onesignalSubId,currentDeviceId,profile_completed,profile_image_url
+PROFILE_SAMPLE id=0GZGIgT70tOi964zPzYX0mcJ62F3 email=jokkysoundmind@yahoo.com role=user hq=false kc=null keys=id,role,email,last_name,created_at,first_name,updated_at,kingschat_id,profile_completed
+SESSION_SAMPLE keys=id,raw_data
+  id=0D6ffcQifnQx9M3A48joPFlvHxv1 user_id=undefined raw_keys=osInfo,userId,deviceId,isActive,sessions,loginTime,sessionId,deviceInfo,browserInfo,deviceModel,lastUpdated,lastActivity
+SESSION_SAMPLE keys=id,raw_data
+  id=0DRMZ2uV0abdu19yreVPnma8MpI3 user_id=undefined raw_keys=osInfo,userId,deviceId,isActive,sessions,loginTime,sessionId,deviceInfo,browserInfo,deviceModel,lastUpdated,lastActivity
+KC_SESSION keys=id,raw_data
+  id=01q2rj raw_keys=otp,message,success,authData,verified,processed,timestamp
+KC_SESSION keys=id,raw_data
+  id=03fvag raw_keys=otp,message,success,authData,verified,processed,timestamp
+chat_users COLS id,raw_data
+chat_users SAMPLE id=002fT3bnJLNjOQk9OhEj keys=id,raw_data raw_keys=id,email,zoneId,fullName,isOnline,lastName,lastSeen,zoneName,firstName
+PASSWORD_OR_TOKEN_COLS NONE
+AUTH_SCHEMA_TABLES auth.audit_log_entries, auth.custom_oauth_providers, auth.flow_state, auth.identities, auth.instances, auth.mfa_amr_claims, auth.mfa_challenges, auth.mfa_factors, auth.oauth_authorizations, auth.oauth_client_states, auth.oauth_clients, auth.oauth_consents, auth.one_time_tokens, auth.refresh_tokens, auth.saml_providers, auth.saml_relay_states, auth.schema_migrations, auth.sessions, auth.sso_domains, auth.sso_providers, auth.users, auth.webauthn_challenges, auth.webauthn_credentials
