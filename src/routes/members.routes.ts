@@ -52,10 +52,30 @@ function wantsEnrich(enrich: unknown): boolean {
 // GET /members/mine — current user's zone + HQ memberships (membership DTOs)
 router.get('/mine', requireAuth, async (req, res) => {
   const userId = res.locals.auth.userId as string;
-  const [zoneRows, hqRows] = await Promise.all([
+  const [zoneRows, hqRows, profileRow] = await Promise.all([
     db.select().from(zoneMembers).where(eq(zoneMembers.userId, userId)),
     db.select().from(hqMembers).where(eq(hqMembers.userId, userId)),
+    db.select().from(profiles).where(eq(profiles.id, userId)).limit(1),
   ]);
+
+  // Synthesize legacy zone from profile if it exists (for Firebase-migrated users)
+  if (profileRow[0]) {
+    const p = profileRow[0];
+    const raw = (p.rawData as any) || {};
+    const legacyZoneId = raw.zoneId || raw.zone_id || raw.zoneCode || raw.zone_code || null;
+    if (legacyZoneId && !zoneRows.some(z => z.zoneId === legacyZoneId)) {
+      zoneRows.push({
+        id: `legacy_${legacyZoneId}`,
+        zoneId: legacyZoneId,
+        userId: userId,
+        role: p.role || 'member',
+        status: 'active',
+        createdAt: p.createdAt,
+        rawData: null,
+      } as any);
+    }
+  }
+
   res.json({ success: true, data: { zoneMembers: zoneRows, hqMembers: hqRows } });
 });
 
