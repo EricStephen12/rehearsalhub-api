@@ -24,6 +24,23 @@ router.get('/', requireAuth, async (_req, res) => {
   }
 });
 
+router.get('/programs', requireAuth, async (_req, res) => {
+  try {
+    const rows = await db.select().from(schedulePrograms);
+    const data = rows
+      .map((r) => mergeRawRow(r))
+      .sort((a, b) => {
+        const ac = String(a.createdAt ?? '');
+        const bc = String(b.createdAt ?? '');
+        return bc.localeCompare(ac);
+      });
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[schedule/programs]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 router.get('/:scheduleId', requireAuth, async (req, res) => {
   try {
     const [row] = await db

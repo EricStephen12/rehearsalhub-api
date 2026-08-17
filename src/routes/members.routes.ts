@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { zoneMembers, hqMembers, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
@@ -125,6 +125,65 @@ router.get('/zone/:zoneId', requireAuth, async (req, res) => {
   const members = await db.select().from(zoneMembers).where(eq(zoneMembers.zoneId, req.params.zoneId));
   const data = wantsEnrich(req.query.enrich) ? await enrichMemberships(members) : members;
   res.json({ success: true, data });
+});
+
+// POST /members/zone-join — join a new zone
+router.post('/zone-join', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const { zone_id, is_hq, user_email, user_name } = req.body;
+
+    if (!zone_id) {
+      res.status(400).json({ success: false, error: 'Missing zone_id' });
+      return;
+    }
+
+    if (is_hq) {
+      const existing = await db
+        .select()
+        .from(hqMembers)
+        .where(
+          sql`${hqMembers.userId} = ${userId} AND ${hqMembers.hqGroupId} = ${zone_id}`
+        );
+      if (existing.length === 0) {
+        await db.insert(hqMembers).values({
+          id: Math.random().toString(36).slice(2, 10),
+          hqGroupId: zone_id,
+          userId,
+          userEmail: user_email || null,
+          userName: user_name || null,
+          role: 'member',
+          status: 'active',
+          createdAt: new Date(),
+          joinedAt: new Date(),
+          rawData: {},
+        });
+      }
+    } else {
+      const existing = await db
+        .select()
+        .from(zoneMembers)
+        .where(
+          sql`${zoneMembers.userId} = ${userId} AND ${zoneMembers.zoneId} = ${zone_id}`
+        );
+      if (existing.length === 0) {
+        await db.insert(zoneMembers).values({
+          id: Math.random().toString(36).slice(2, 10),
+          zoneId: zone_id,
+          userId,
+          role: 'member',
+          status: 'active',
+          createdAt: new Date(),
+          rawData: {},
+        });
+      }
+    }
+
+    res.json({ success: true, message: 'Successfully joined' });
+  } catch (err) {
+    console.error('[members/zone-join]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
 });
 
 export default router;
