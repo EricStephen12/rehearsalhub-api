@@ -401,3 +401,18 @@ export const zonePraiseNights = pgTable('zone_praise_nights', {
   id: text('id').primaryKey(),
   rawData: jsonb('raw_data'),
 });
+
+export const pageCategories = pgTable('page_categories', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
+export const zonePageCategories = pgTable('zone_page_categories', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
+export const zoneCategories = pgTable('zone_categories', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
