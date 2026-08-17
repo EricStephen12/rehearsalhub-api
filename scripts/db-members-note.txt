@@ -1,4 +1,0 @@
-hq_sample=[{"id":"mg7nihnR7ofzT0ZGLO66GQnwwqp1_zone-005","user_id":"mg7nihnR7ofzT0ZGLO66GQnwwqp1","hq_group_id":null,"user_email":null,"user_name":null,"role":"member","status":null},{"id":"mmhKKyBjWWMoFk4EmTlQnfG2QYC3_zone-005","user_id":"mmhKKyBjWWMoFk4EmTlQnfG2QYC3","hq_group_id":null,"user_email":null,"user_name":null,"role":"member","status":null},{"id":"mxRFZCRQB0gfNOauTt6y4HJTusS2_zone-005","user_id":"mxRFZCRQB0gfNOauTt6y4HJTusS2","hq_group_id":null,"user_email":null,"user_name":null,"role":"member","status":null}]
-hq_orphans_no_profile=0
-hq_linked_to_profiles=134
-zone_members_rows=0 (empty table)
