@@ -58,17 +58,20 @@ router.get('/mine', requireAuth, async (req, res) => {
     db.select().from(profiles).where(eq(profiles.id, userId)).limit(1),
   ]);
 
-  // Synthesize legacy zones from profile if they exist (for Firebase-migrated users)
+  // Synthesize legacy zones from profile if they exist (for Firebase-migrated users).
+  // IMPORTANT: Only trust invitation-code style fields (zone_code, zoneCode).
+  // Do NOT use raw.zone or raw.zoneId — these are stale snapshot fields from old
+  // Firebase exports and may point to zones the user has already left.
   if (profileRow[0]) {
     const p = profileRow[0];
     const raw = (p.rawData as any) || {};
-    const possibleZones = new Set<string>(
-      [raw.zoneId, raw.zone_id, raw.zoneCode, raw.zone_code, raw.zone]
+    const possibleZoneCodes = new Set<string>(
+      [raw.zoneCode, raw.zone_code]
         .filter(Boolean)
         .map(String)
     );
     
-    possibleZones.forEach(zid => {
+    possibleZoneCodes.forEach(zid => {
       if (!zoneRows.some(z => z.zoneId === zid)) {
         zoneRows.push({
           id: `legacy_${zid}`,

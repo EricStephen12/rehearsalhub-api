@@ -1,6 +1,15 @@
 import { pgTable, text, timestamp, boolean, jsonb, integer, index } from 'drizzle-orm/pg-core';
 
-export const masterSongs = pgTable('master_songs', {
+// ============================================================================
+// 1. SONGS & REPERTOIRE (CORE DOMAIN)
+// ============================================================================
+
+/**
+ * MINISTERED SONGS (formerly master_songs)
+ * The global ministry catalog of all ministered songs across Loveworld Singers.
+ * Fetched by HQ and global members on the "All Ministered Songs" screens.
+ */
+export const ministeredSongs = pgTable('ministered_songs', {
   id: text('id').primaryKey(),
   title: text('title'),
   key: text('key'),
@@ -25,9 +34,17 @@ export const masterSongs = pgTable('master_songs', {
   updatedAt: timestamp('updated_at'),
   sourceType: text('source_type'),
   isHqOnly: boolean('is_hq_only'),
+  rawData: jsonb('raw_data'),
 });
 
-export const praiseNightSongs = pgTable('praise_night_songs', {
+/** Backward-compatibility alias */
+export const masterSongs = ministeredSongs;
+
+/**
+ * SONGS (formerly praise_night_songs)
+ * The Main Repertoire / Rehearsal Songs table for all songs prepared and rehearsed.
+ */
+export const songs = pgTable('songs', {
   id: text('id').primaryKey(),
   title: text('title'),
   key: text('key'),
@@ -47,10 +64,78 @@ export const praiseNightSongs = pgTable('praise_night_songs', {
   categories: jsonb('categories'),
   createdAt: text('created_at'),
   updatedAt: timestamp('updated_at'),
+  rawData: jsonb('raw_data'),
 });
 
-// ── Profiles (live Supabase shape — identity source of truth) ─────────────────
+/** Backward-compatibility alias */
+export const praiseNightSongs = songs;
 
+/**
+ * ZONE SONGS
+ * Repertoire specific to individual local zones (non-HQ).
+ */
+export const zoneSongs = pgTable('zone_songs', {
+  id: text('id').primaryKey(),
+  title: text('title'),
+  key: text('key'),
+  tempo: text('tempo'),
+  zoneId: text('zone_id'),
+  status: text('status'),
+  audioFile: text('audio_file'),
+  categories: jsonb('categories'),
+  rawData: jsonb('raw_data'),
+});
+
+/**
+ * SUBGROUP SONGS
+ * Repertoire assigned to sub-choirs (e.g. Sopranos, Altos, Instrumentalists).
+ */
+export const subgroupSongs = pgTable('subgroup_songs', {
+  id: text('id').primaryKey(),
+  title: text('title'),
+  key: text('key'),
+  tempo: text('tempo'),
+  zoneId: text('zone_id'),
+  status: text('status'),
+  rawData: jsonb('raw_data'),
+});
+
+/**
+ * PRAISE NIGHT EVENTS
+ * Event metadata for individual Praise Nights (e.g. Praise Night 27, 28, etc.).
+ */
+export const praiseNights = pgTable('praise_nights', {
+  id: text('id').primaryKey(),
+  name: text('name'),
+  date: text('date'),
+  scope: text('scope'),
+  zoneId: text('zone_id'),
+  category: text('category'),
+  location: text('location'),
+  bannerImage: text('banner_image'),
+  songs: jsonb('songs'),
+  rawData: jsonb('raw_data'),
+});
+
+export const subgroupPraiseNights = pgTable('subgroup_praise_nights', {
+  id: text('id').primaryKey(),
+  name: text('name'),
+  date: text('date'),
+  zoneId: text('zone_id'),
+  subGroupId: text('sub_group_id'),
+  subGroupName: text('sub_group_name'),
+  songIds: jsonb('song_ids'),
+  rawData: jsonb('raw_data'),
+});
+
+// ============================================================================
+// 2. USERS, PROFILES & MEMBERSHIP (IDENTITY SOURCE OF TRUTH)
+// ============================================================================
+
+/**
+ * PROFILES
+ * Master user identity directory (740+ singers and administrators).
+ */
 export const profiles = pgTable('profiles', {
   id: text('id').primaryKey(),
   email: text('email'),
@@ -66,7 +151,10 @@ export const profiles = pgTable('profiles', {
   updatedAt: text('updated_at'),
 });
 
-/** Additive — password hashes for existing profiles (does not replace profiles). */
+/**
+ * AUTH CREDENTIALS
+ * Password hashes for email/password authentication.
+ */
 export const authCredentials = pgTable('auth_credentials', {
   profileId: text('profile_id')
     .primaryKey()
@@ -77,8 +165,8 @@ export const authCredentials = pgTable('auth_credentials', {
 });
 
 /**
- * Additive — JWT refresh tokens.
- * Physical column remains `user_id` (live DB / older writers); value is always profiles.id.
+ * REFRESH TOKENS
+ * Active JWT session tokens.
  */
 export const refreshTokens = pgTable(
   'refresh_tokens',
@@ -96,8 +184,14 @@ export const refreshTokens = pgTable(
   }),
 );
 
-// ── Zones ─────────────────────────────────────────────────────────────────────
+// ============================================================================
+// 3. ZONES & SUBGROUPS
+// ============================================================================
 
+/**
+ * ZONES
+ * All 20 organizational zones across the ministry (HQ + regional zones).
+ */
 export const zones = pgTable('zones', {
   id: text('id').primaryKey(),
   name: text('name'),
@@ -111,64 +205,78 @@ export const zones = pgTable('zones', {
   subscriptionStatus: text('subscription_status').default('active'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at'),
+  rawData: jsonb('raw_data'),
 });
 
-/** Live Supabase shape — membership link only (not a profile). */
+/**
+ * ZONE MEMBERS
+ * Links users to their specific local zone memberships.
+ */
 export const zoneMembers = pgTable('zone_members', {
   id: text('id').primaryKey(),
   zoneId: text('zone_id').notNull(),
   userId: text('user_id').notNull(),
   role: text('role').default('member'),
   status: text('status').default('active'),
+  invitedBy: text('invited_by'),
+  joinedAt: timestamp('joined_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow(),
   rawData: jsonb('raw_data'),
 });
-
-/** Live Supabase shape — membership link only (not a profile). */
-export const hqMembers = pgTable('hq_members', {
-  id: text('id').primaryKey(),
-  hqGroupId: text('hq_group_id').notNull(),
-  userId: text('user_id').notNull(),
-  userEmail: text('user_email'),
-  userName: text('user_name'),
-  role: text('role').default('member'),
-  status: text('status').default('active'),
-  createdAt: timestamp('created_at').defaultNow(),
-  joinedAt: timestamp('joined_at'),
-  rawData: jsonb('raw_data'),
-});
-
-// ── Subscriptions ─────────────────────────────────────────────────────────────
 
 export const individualSubscriptions = pgTable('individual_subscriptions', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
-  status: text('status').default('inactive'),
-  expiresAt: text('expires_at'),
+  tier: text('tier'),
   plan: text('plan'),
+  status: text('status').default('active'),
+  paymentRef: text('payment_ref'),
+  expiresAt: text('expires_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at'),
-});
-
-// ── Songs & Praise Nights ─────────────────────────────────────────────────────
-
-export const praiseNights = pgTable('praise_nights', {
-  id: text('id').primaryKey(),
-  name: text('name'),
-  date: text('date'),
-  scope: text('scope'),
-  zoneId: text('zone_id'),
-  category: text('category'),
-  location: text('location'),
-  bannerImage: text('banner_image'),
-  songs: jsonb('songs'),
   rawData: jsonb('raw_data'),
 });
 
-// ── Chats & Messages ──────────────────────────────────────────────────────────
+/**
+ * HQ MEMBERS
+ * Dedicated table tracking users with official HQ group memberships.
+ */
+export const hqMembers = pgTable('hq_members', {
+  id: text('id').primaryKey(),
+  hqGroupId: text('hq_group_id').notNull(),
+  userId: text('user_id').notNull(),
+  role: text('role').default('member'),
+  status: text('status').default('active'),
+  invitedBy: text('invited_by'),
+  userEmail: text('user_email'),
+  userName: text('user_name'),
+  joinedAt: timestamp('joined_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at'),
+  rawData: jsonb('raw_data'),
+});
 
-/** Matches Supabase chats_v2 from firebase-to-supabase migrate-from-export.js */
-export const chatsV2 = pgTable('chats_v2', {
+/**
+ * SUBGROUPS
+ * Internal sub-sections within a choir (e.g. Soprano, Alto, Tenor, Band).
+ */
+export const subgroups = pgTable('subgroups', {
+  id: text('id').primaryKey(),
+  name: text('name'),
+  zoneId: text('zone_id'),
+  description: text('description'),
+  rawData: jsonb('raw_data'),
+});
+
+// ============================================================================
+// 4. CHATS, MESSAGES & REAL-TIME COMMUNICATION
+// ============================================================================
+
+/**
+ * CHATS (Promoted standard table)
+ * Group and 1-on-1 conversations.
+ */
+export const chats = pgTable('chats', {
   id: text('id').primaryKey(),
   type: text('type'),
   createdBy: text('created_by'),
@@ -178,8 +286,14 @@ export const chatsV2 = pgTable('chats_v2', {
   rawData: jsonb('raw_data'),
 });
 
-/** Matches Supabase messages_v2 from migrate-from-export.js */
-export const messagesV2 = pgTable('messages_v2', {
+/** Backward compatibility alias */
+export const chatsV2 = chats;
+
+/**
+ * MESSAGES (Promoted standard table)
+ * Individual chat messages within a conversation.
+ */
+export const messages = pgTable('messages', {
   id: text('id').primaryKey(),
   text: text('text'),
   type: text('type').default('text'),
@@ -192,9 +306,14 @@ export const messagesV2 = pgTable('messages_v2', {
   rawData: jsonb('raw_data'),
 });
 
-// ── Calls ─────────────────────────────────────────────────────────────────────
+/** Backward compatibility alias */
+export const messagesV2 = messages;
 
-export const callsV2 = pgTable('calls_v2', {
+/**
+ * CALLS
+ * Voice and video call records.
+ */
+export const calls = pgTable('calls', {
   id: text('id').primaryKey(),
   callerId: text('caller_id').notNull(),
   callerName: text('caller_name'),
@@ -209,8 +328,29 @@ export const callsV2 = pgTable('calls_v2', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
-// ── Schedule (live table is schedule_programs) ────────────────────────────────
+/** Backward compatibility alias */
+export const callsV2 = calls;
 
+/**
+ * USER STATUSES
+ * Real-time status / stories.
+ */
+export const userStatuses = pgTable('user_statuses', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
+/** Backward compatibility alias */
+export const statusesV2 = userStatuses;
+
+// ============================================================================
+// 5. SCHEDULES, PROGRAMS & EVENTS
+// ============================================================================
+
+/**
+ * SCHEDULE PROGRAMS
+ * Weekly and daily rehearsal schedules, routines, and service song lists.
+ */
 export const schedulePrograms = pgTable('schedule_programs', {
   id: text('id').primaryKey(),
   name: text('name'),
@@ -226,40 +366,95 @@ export const schedulePrograms = pgTable('schedule_programs', {
   updatedAt: timestamp('updated_at'),
 });
 
-/** @deprecated Use schedulePrograms — live DB has no public.schedule table. */
 export const schedule = schedulePrograms;
 
-// ── Activity Logs ─────────────────────────────────────────────────────────────
+export const scheduleCategories = pgTable('schedule_categories', {
+  id: text('id').primaryKey(),
+  label: text('label'),
+  icon: text('icon'),
+  color: text('color'),
+  isActive: boolean('is_active'),
+  parentId: text('parent_id'),
+  rawData: jsonb('raw_data'),
+});
 
-/** Live shape: id + raw_data only. */
+export const upcomingEvents = pgTable('upcoming_events', {
+  id: text('id').primaryKey(),
+  title: text('title'),
+  date: text('date'),
+  type: text('type'),
+  zoneId: text('zone_id'),
+  location: text('location'),
+  description: text('description'),
+  rawData: jsonb('raw_data'),
+});
+
+// ============================================================================
+// 6. ATTENDANCE & ACTIVITY AUDIT LOGS
+// ============================================================================
+
+/**
+ * ATTENDANCE
+ * Rehearsal check-ins via QR codes.
+ */
+export const attendance = pgTable('attendance', {
+  id: text('id').primaryKey(),
+  status: text('status'),
+  userId: text('user_id'),
+  zoneId: text('zone_id'),
+  userName: text('user_name'),
+  eventName: text('event_name'),
+  qrCode: text('qr_code'),
+  checkInTime: text('check_in_time'),
+  recordedByAdminId: text('recorded_by_admin_id'),
+  rawData: jsonb('raw_data'),
+});
+
+/**
+ * ACTIVITY LOGS
+ * System-wide audit logs tracking who performed what action.
+ */
 export const activityLogs = pgTable('activity_logs', {
   id: text('id').primaryKey(),
   rawData: jsonb('raw_data'),
 });
 
-// ── Categories ────────────────────────────────────────────────────────────────
-
-/** Live shape: id + raw_data only. */
-export const categories = pgTable('categories', {
+/**
+ * SONG HISTORY
+ * Audit log of changes to song lyrics, keys, tempo, and arrangements.
+ */
+export const songHistory = pgTable('song_history', {
   id: text('id').primaryKey(),
+  type: text('type'),
+  title: text('title'),
+  songId: text('song_id'),
+  newValue: text('new_value'),
+  oldValue: text('old_value'),
+  createdAt: timestamp('created_at'),
+  createdBy: text('created_by'),
+  description: text('description'),
   rawData: jsonb('raw_data'),
 });
 
-// ── Submitted Songs ───────────────────────────────────────────────────────────
+// ============================================================================
+// 7. USER FAVORITES, PLAYLISTS & NOTES
+// ============================================================================
 
-export const submittedSongs = pgTable('submitted_songs', {
+export const userFavorites = pgTable('user_favorites', {
   id: text('id').primaryKey(),
   userId: text('user_id'),
-  title: text('title'),
-  status: text('status').default('pending'),
-  createdAt: timestamp('created_at'),
+  songId: text('song_id'),
   rawData: jsonb('raw_data'),
-  zoneId: text('zone_id'),
-  submittedBy: text('submitted_by'),
-  submittedByEmail: text('submitted_by_email'),
 });
 
-// ── User Song Notes & Doodles ─────────────────────────────────────────────────
+export const userPlaylists = pgTable('user_playlists', {
+  id: text('id').primaryKey(),
+  title: text('title'),
+  userId: text('user_id'),
+  songIds: jsonb('song_ids'),
+  isPublic: boolean('is_public'),
+  rawData: jsonb('raw_data'),
+});
 
 export const userSongNotes = pgTable('user_song_notes', {
   id: text('id').primaryKey(),
@@ -279,36 +474,21 @@ export const mediaDoodles = pgTable('media_doodles', {
   updatedAt: timestamp('updated_at'),
 });
 
-// ── App Updates ───────────────────────────────────────────────────────────────
-
-export const appUpdates = pgTable('app_updates', {
-  id: text('id').primaryKey(),
-  version: text('version').notNull(),
-  title: text('title'),
-  description: text('description'),
-  isForced: boolean('is_forced').default(false),
-  platform: text('platform'),
-  createdAt: timestamp('created_at').defaultNow(),
-});
-
-// ── Tables already populated in Supabase (Firebase export migration) ──────────
-// Column shapes match migrate-from-export.js / raw fallback tables. Do not re-migrate.
-
-export const userFavorites = pgTable('user_favorites', {
+export const submittedSongs = pgTable('submitted_songs', {
   id: text('id').primaryKey(),
   userId: text('user_id'),
-  songId: text('song_id'),
+  title: text('title'),
+  status: text('status').default('pending'),
+  createdAt: timestamp('created_at'),
   rawData: jsonb('raw_data'),
+  zoneId: text('zone_id'),
+  submittedBy: text('submitted_by'),
+  submittedByEmail: text('submitted_by_email'),
 });
 
-export const userPlaylists = pgTable('user_playlists', {
-  id: text('id').primaryKey(),
-  title: text('title'),
-  userId: text('user_id'),
-  songIds: jsonb('song_ids'),
-  isPublic: boolean('is_public'),
-  rawData: jsonb('raw_data'),
-});
+// ============================================================================
+// 8. NOTIFICATIONS & MEDIA ASSETS
+// ============================================================================
 
 export const notifications = pgTable('notifications', {
   id: text('id').primaryKey(),
@@ -327,64 +507,55 @@ export const notifications = pgTable('notifications', {
   rawData: jsonb('raw_data'),
 });
 
-export const subgroups = pgTable('subgroups', {
+export const pushNotifications = pgTable('push_notifications', {
   id: text('id').primaryKey(),
-  name: text('name'),
-  zoneId: text('zone_id'),
+  type: text('type'),
+  title: text('title'),
+  message: text('message'),
+  category: text('category'),
+  priority: text('priority'),
+  broadcast: boolean('broadcast'),
+  actionUrl: text('action_url'),
+  createdAt: text('created_at'),
+  targetAudience: text('target_audience'),
+  rawData: jsonb('raw_data'),
+});
+
+export const mediaVideos = pgTable('media_videos', {
+  id: text('id').primaryKey(),
+  title: text('title'),
+  type: text('type'),
+  videoUrl: text('video_url'),
+  thumbnail: text('thumbnail'),
   description: text('description'),
+  forHq: boolean('for_hq'),
+  isYoutube: boolean('is_youtube'),
+  featured: boolean('featured'),
+  views: integer('views'),
+  likes: integer('likes'),
+  createdBy: text('created_by'),
+  createdByName: text('created_by_name'),
   rawData: jsonb('raw_data'),
 });
 
-export const subgroupSongs = pgTable('subgroup_songs', {
+export const categories = pgTable('categories', {
   id: text('id').primaryKey(),
-  title: text('title'),
-  key: text('key'),
-  tempo: text('tempo'),
-  zoneId: text('zone_id'),
-  status: text('status'),
   rawData: jsonb('raw_data'),
 });
 
-export const subgroupPraiseNights = pgTable('subgroup_praise_nights', {
-  id: text('id').primaryKey(),
-  name: text('name'),
-  date: text('date'),
-  zoneId: text('zone_id'),
-  subGroupId: text('sub_group_id'),
-  subGroupName: text('sub_group_name'),
-  songIds: jsonb('song_ids'),
-  rawData: jsonb('raw_data'),
-});
-
-export const zoneSongs = pgTable('zone_songs', {
-  id: text('id').primaryKey(),
-  title: text('title'),
-  key: text('key'),
-  tempo: text('tempo'),
-  zoneId: text('zone_id'),
-  status: text('status'),
-  audioFile: text('audio_file'),
-  categories: jsonb('categories'),
-  rawData: jsonb('raw_data'),
-});
-
-export const attendance = pgTable('attendance', {
-  id: text('id').primaryKey(),
-  status: text('status'),
-  userId: text('user_id'),
-  zoneId: text('zone_id'),
-  userName: text('user_name'),
-  eventName: text('event_name'),
-  qrCode: text('qr_code'),
-  checkInTime: text('check_in_time'),
-  recordedByAdminId: text('recorded_by_admin_id'),
-  rawData: jsonb('raw_data'),
-});
-
-/** Raw-only tables from REMAINING_COLLECTIONS fallback */
 export const settings = pgTable('settings', {
   id: text('id').primaryKey(),
   rawData: jsonb('raw_data'),
+});
+
+export const appUpdates = pgTable('app_updates', {
+  id: text('id').primaryKey(),
+  version: text('version').notNull(),
+  title: text('title'),
+  description: text('description'),
+  isForced: boolean('is_forced').default(false),
+  platform: text('platform'),
+  createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const userGroups = pgTable('user_groups', {
