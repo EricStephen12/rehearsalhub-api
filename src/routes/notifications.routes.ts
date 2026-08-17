@@ -81,5 +81,67 @@ router.get('/', requireAuth, async (_req, res) => {
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
 });
+router.post('/send', requireAuth, async (req, res) => {
+  try {
+    const { recipientIds, title, body, data } = req.body;
+    if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
+       res.status(400).json({ success: false, error: 'recipientIds array is required' });
+       return;
+    }
+
+    const { inArray } = await import('drizzle-orm');
+    const { profiles } = await import('../schema');
+
+    // Fetch the rawData for the recipient profiles to get their expo_push_token
+    const targetProfiles = await db
+      .select({ id: profiles.id, rawData: profiles.rawData })
+      .from(profiles)
+      .where(inArray(profiles.id, recipientIds));
+
+    const expoTokens: string[] = [];
+    for (const p of targetProfiles) {
+      const token = (p.rawData as any)?.expo_push_token || (p.rawData as any)?.expoPushToken;
+      if (token && typeof token === 'string' && token.startsWith('ExponentPushToken')) {
+        expoTokens.push(token);
+      }
+    }
+
+    if (expoTokens.length === 0) {
+      // Nobody to send to, but we succeeded in processing the request
+      res.json({ success: true, message: 'No valid push tokens found for recipients.' });
+      return;
+    }
+
+    const payload = expoTokens.map(token => ({
+      to: token,
+      sound: 'default',
+      title,
+      body,
+      data: data || {},
+      channelId: 'default',
+      priority: 'high',
+    }));
+
+    const response = await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Accept-encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload.length === 1 ? payload[0] : payload),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.warn('[notifications/send] Expo Push API Error:', errText);
+    }
+
+    res.json({ success: true, message: 'Push notifications queued to Expo.' });
+  } catch (err) {
+    console.error('[notifications/send]', err);
+    res.status(500).json({ success: false, error: 'Failed to send push notifications.' });
+  }
+});
 
 export default router;

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { categories } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
@@ -6,9 +7,12 @@ import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
 
-router.get('/', requireAuth, async (_req, res) => {
+router.get('/', requireAuth, async (req, res) => {
   try {
-    const rows = await db.select().from(categories);
+    const { zoneId } = req.query;
+
+    const rows = await db.select().from(categories)
+      .where(zoneId ? sql`${categories.rawData}->>'zoneId' = ${zoneId as string} OR ${categories.rawData}->>'zone_id' = ${zoneId as string}` : undefined);
     const data = rows
       .map((r) => {
         const m = mergeRawRow(r);

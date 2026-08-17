@@ -26,6 +26,8 @@ import settingsRouter from './routes/settings.routes';
 import notificationsRouter from './routes/notifications.routes';
 import subgroupsRouter from './routes/subgroups.routes';
 import audioRouter from './routes/audio.routes';
+import kingspayRouter from './routes/kingspay.routes';
+import lexiconRouter from './routes/lexicon.routes';
 import { writesRouter } from './routes/writes.routes';
 import { createWsServer } from './ws/wsServer';
 
@@ -91,6 +93,8 @@ app.use('/settings', settingsRouter);
 app.use('/notifications', notificationsRouter);
 app.use('/subgroups', subgroupsRouter);
 app.use('/audio', audioRouter);
+app.use('/kingspay', kingspayRouter);
+app.use('/lexicon', lexiconRouter);
 
 // Write endpoints — require JWT
 app.use('/', writesRouter);
