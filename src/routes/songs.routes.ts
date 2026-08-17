@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { eq, asc, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
-  masterSongs,
-  praiseNightSongs,
+  ministeredSongs,
+  songs,
   zoneSongs,
   subgroupSongs,
   zonePraiseNights,
@@ -14,23 +14,25 @@ import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
 
-// GET /songs/master — JWT-authenticated master library (does not modify /api/master-songs)
-router.get('/master', requireAuth, async (_req, res) => {
+// GET /songs/master & /songs/ministered — ministered songs library
+const getMinisteredSongsHandler = async (_req: any, res: any) => {
   try {
-    const songs = await db.select().from(masterSongs).orderBy(asc(masterSongs.title));
-    res.json({ success: true, count: songs.length, data: songs });
+    const rows = await db.select().from(ministeredSongs).orderBy(asc(ministeredSongs.title));
+    res.json({ success: true, count: rows.length, data: rows });
   } catch (err) {
-    console.error('[songs/master]', err);
+    console.error('[songs/ministered]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
-});
+};
+router.get('/master', requireAuth, getMinisteredSongsHandler);
+router.get('/ministered', requireAuth, getMinisteredSongsHandler);
 
-router.get('/master/:id', requireAuth, async (req, res) => {
+const getMinisteredSongByIdHandler = async (req: any, res: any) => {
   try {
     const [song] = await db
       .select()
-      .from(masterSongs)
-      .where(eq(masterSongs.id, req.params.id))
+      .from(ministeredSongs)
+      .where(eq(ministeredSongs.id, req.params.id))
       .limit(1);
     if (!song) {
       res.status(404).json({ success: false, error: 'Song not found' });
@@ -38,34 +40,38 @@ router.get('/master/:id', requireAuth, async (req, res) => {
     }
     res.json({ success: true, data: song });
   } catch (err) {
-    console.error('[songs/master/:id]', err);
+    console.error('[songs/ministered/:id]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
-});
+};
+router.get('/master/:id', requireAuth, getMinisteredSongByIdHandler);
+router.get('/ministered/:id', requireAuth, getMinisteredSongByIdHandler);
 
-router.get('/praise-night', requireAuth, async (req, res) => {
+// GET /songs/praise-night & GET /songs — Main Repertoire
+const getSongsHandler = async (req: any, res: any) => {
   try {
     const { praiseNightId, zoneId } = req.query;
-    const songs = await db.select().from(praiseNightSongs)
+    const rows = await db.select().from(songs)
       .where(
-        praiseNightId ? eq(praiseNightSongs.praiseNightId, praiseNightId as string) :
-        zoneId ? eq(praiseNightSongs.zoneId, zoneId as string) :
+        praiseNightId ? eq(songs.praiseNightId, praiseNightId as string) :
+        zoneId ? eq(songs.zoneId, zoneId as string) :
         undefined
       )
-      .orderBy(asc(praiseNightSongs.title));
-    res.json({ success: true, count: songs.length, data: songs });
+      .orderBy(asc(songs.title));
+    res.json({ success: true, count: rows.length, data: rows });
   } catch (err) {
     console.error('[songs/praise-night]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
-});
+};
+router.get('/praise-night', requireAuth, getSongsHandler);
 
-router.get('/praise-night/:id', requireAuth, async (req, res) => {
+const getSongByIdHandler = async (req: any, res: any) => {
   try {
     const [song] = await db
       .select()
-      .from(praiseNightSongs)
-      .where(eq(praiseNightSongs.id, req.params.id))
+      .from(songs)
+      .where(eq(songs.id, req.params.id))
       .limit(1);
     if (!song) {
       res.status(404).json({ success: false, error: 'Song not found' });
@@ -76,7 +82,8 @@ router.get('/praise-night/:id', requireAuth, async (req, res) => {
     console.error('[songs/praise-night/:id]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
-});
+};
+router.get('/praise-night/:id', requireAuth, getSongByIdHandler);
 
 /** GET /songs/zone — list zone songs */
 router.get('/zone', requireAuth, async (req, res) => {
@@ -216,7 +223,7 @@ router.get('/history', requireAuth, async (req, res) => {
     }
 
     // Try finding the song in any of the song tables
-    const tables = [praiseNightSongs, masterSongs, zoneSongs, subgroupSongs];
+    const tables = [songs, ministeredSongs, zoneSongs, subgroupSongs];
     for (const t of tables) {
       const [song] = await db.select().from(t).where(eq(t.id, songId)).limit(1);
       if (song) {

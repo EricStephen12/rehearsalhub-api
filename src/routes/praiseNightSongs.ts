@@ -1,50 +1,50 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
-import { praiseNightSongs } from '../schema';
+import { songs } from '../schema';
 import { eq } from 'drizzle-orm';
 
 const router = Router();
 
 // GET /api/praise-night-songs
-// Returns all praise night songs with audio URLs
+// Returns all rehearsal / praise night songs with audio URLs
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { praiseNightId, zoneId } = req.query;
 
     let query = db
       .select({
-        id: praiseNightSongs.id,
-        title: praiseNightSongs.title,
-        key: praiseNightSongs.key,
-        tempo: praiseNightSongs.tempo,
-        category: praiseNightSongs.category,
-        writer: praiseNightSongs.writer,
-        conductor: praiseNightSongs.conductor,
-        leadSinger: praiseNightSongs.leadSinger,
-        drummer: praiseNightSongs.drummer,
-        audioFile: praiseNightSongs.audioFile,
-        audioUrls: praiseNightSongs.audioUrls,
-        lyrics: praiseNightSongs.lyrics,
-        categories: praiseNightSongs.categories,
-        status: praiseNightSongs.status,
-        isActive: praiseNightSongs.isActive,
-        zoneId: praiseNightSongs.zoneId,
-        praiseNightId: praiseNightSongs.praiseNightId,
-        createdAt: praiseNightSongs.createdAt,
-        updatedAt: praiseNightSongs.updatedAt,
+        id: songs.id,
+        title: songs.title,
+        key: songs.key,
+        tempo: songs.tempo,
+        category: songs.category,
+        writer: songs.writer,
+        conductor: songs.conductor,
+        leadSinger: songs.leadSinger,
+        drummer: songs.drummer,
+        audioFile: songs.audioFile,
+        audioUrls: songs.audioUrls,
+        lyrics: songs.lyrics,
+        categories: songs.categories,
+        status: songs.status,
+        isActive: songs.isActive,
+        zoneId: songs.zoneId,
+        praiseNightId: songs.praiseNightId,
+        createdAt: songs.createdAt,
+        updatedAt: songs.updatedAt,
       })
-      .from(praiseNightSongs);
+      .from(songs);
 
-    const songs = await (praiseNightId
-      ? query.where(eq(praiseNightSongs.praiseNightId, praiseNightId as string))
+    const rows = await (praiseNightId
+      ? query.where(eq(songs.praiseNightId, praiseNightId as string))
       : zoneId
-      ? query.where(eq(praiseNightSongs.zoneId, zoneId as string))
+      ? query.where(eq(songs.zoneId, zoneId as string))
       : query);
 
     res.json({
       success: true,
-      count: songs.length,
-      data: songs,
+      count: rows.length,
+      data: rows,
     });
   } catch (error) {
     console.error('Error fetching praise night songs:', error);
@@ -61,8 +61,8 @@ router.get('/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const [song] = await db
       .select()
-      .from(praiseNightSongs)
-      .where(eq(praiseNightSongs.id, id))
+      .from(songs)
+      .where(eq(songs.id, id))
       .limit(1);
 
     if (!song) {

@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { chatsV2, messagesV2 } from '../schema';
+import { chats, messages } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
 
-function shapeChat(row: typeof chatsV2.$inferSelect) {
+function shapeChat(row: typeof chats.$inferSelect) {
   const merged = mergeRawRow(row);
   const participants = Array.isArray(merged.participants)
     ? merged.participants
@@ -31,8 +31,8 @@ router.get('/', requireAuth, async (req, res) => {
     const userId = res.locals.auth.userId as string;
     const rows = await db
       .select()
-      .from(chatsV2)
-      .where(sql`${chatsV2.participants}::jsonb ? ${userId}`);
+      .from(chats)
+      .where(sql`${chats.participants}::jsonb ? ${userId}`);
     res.json({ success: true, data: rows.map(shapeChat) });
   } catch (err) {
     console.error('[chats/]', err);
@@ -42,10 +42,10 @@ router.get('/', requireAuth, async (req, res) => {
 
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {
-    const messages = await db.select().from(messagesV2).where(eq(messagesV2.chatId, req.params.chatId));
+    const messageRows = await db.select().from(messages).where(eq(messages.chatId, req.params.chatId));
     res.json({
       success: true,
-      data: messages.map((m) => {
+      data: messageRows.map((m) => {
         const merged = mergeRawRow(m);
         return {
           ...merged,
@@ -66,7 +66,7 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
 
 router.get('/:chatId', requireAuth, async (req, res) => {
   try {
-    const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, req.params.chatId)).limit(1);
+    const [chat] = await db.select().from(chats).where(eq(chats.id, req.params.chatId)).limit(1);
     if (!chat) { res.status(404).json({ success: false, error: 'Chat not found' }); return; }
     res.json({ success: true, data: shapeChat(chat) });
   } catch (err) {

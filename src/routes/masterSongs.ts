@@ -1,40 +1,39 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
-import { masterSongs } from '../schema';
-import { eq, isNotNull, ne } from 'drizzle-orm';
+import { ministeredSongs } from '../schema';
+import { eq } from 'drizzle-orm';
 
 const router = Router();
 
-// GET /api/master-songs
-// Returns all master songs with their audio URLs and full payload
+// GET /api/master-songs (Ministered Songs Catalog)
 router.get('/', async (req: Request, res: Response) => {
   try {
     const songs = await db
       .select({
-        id: masterSongs.id,
-        title: masterSongs.title,
-        key: masterSongs.key,
-        tempo: masterSongs.tempo,
-        category: masterSongs.category,
-        writer: masterSongs.writer,
-        conductor: masterSongs.conductor,
-        leadSinger: masterSongs.leadSinger,
-        drummer: masterSongs.drummer,
-        bassGuitarist: masterSongs.bassGuitarist,
-        leadKeyboardist: masterSongs.leadKeyboardist,
-        audioFile: masterSongs.audioFile,
-        audioUrls: masterSongs.audioUrls,
-        imageUrl: masterSongs.imageUrl,
-        lyrics: masterSongs.lyrics,
-        solfa: masterSongs.solfa,
-        categories: masterSongs.categories,
-        customParts: masterSongs.customParts,
-        sourceType: masterSongs.sourceType,
-        publishedAt: masterSongs.publishedAt,
-        updatedAt: masterSongs.updatedAt,
+        id: ministeredSongs.id,
+        title: ministeredSongs.title,
+        key: ministeredSongs.key,
+        tempo: ministeredSongs.tempo,
+        category: ministeredSongs.category,
+        writer: ministeredSongs.writer,
+        conductor: ministeredSongs.conductor,
+        leadSinger: ministeredSongs.leadSinger,
+        drummer: ministeredSongs.drummer,
+        bassGuitarist: ministeredSongs.bassGuitarist,
+        leadKeyboardist: ministeredSongs.leadKeyboardist,
+        audioFile: ministeredSongs.audioFile,
+        audioUrls: ministeredSongs.audioUrls,
+        imageUrl: ministeredSongs.imageUrl,
+        lyrics: ministeredSongs.lyrics,
+        solfa: ministeredSongs.solfa,
+        categories: ministeredSongs.categories,
+        customParts: ministeredSongs.customParts,
+        sourceType: ministeredSongs.sourceType,
+        publishedAt: ministeredSongs.publishedAt,
+        updatedAt: ministeredSongs.updatedAt,
       })
-      .from(masterSongs)
-      .orderBy(masterSongs.title);
+      .from(ministeredSongs)
+      .orderBy(ministeredSongs.title);
 
     res.json({
       success: true,
@@ -57,8 +56,8 @@ router.get('/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const [song] = await db
       .select()
-      .from(masterSongs)
-      .where(eq(masterSongs.id, id))
+      .from(ministeredSongs)
+      .where(eq(ministeredSongs.id, id))
       .limit(1);
 
     if (!song) {

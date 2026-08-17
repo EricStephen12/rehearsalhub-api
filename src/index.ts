@@ -99,9 +99,11 @@ app.use('/lexicon', lexiconRouter);
 // Write endpoints — require JWT
 app.use('/', writesRouter);
 
-// Public song endpoints — require x-api-key header (unchanged)
+// Public song endpoints — require x-api-key header (supporting both standard and legacy paths)
 app.use('/api/master-songs', apiKeyAuth, masterSongsRouter);
+app.use('/api/ministered-songs', apiKeyAuth, masterSongsRouter);
 app.use('/api/praise-night-songs', apiKeyAuth, praiseNightSongsRouter);
+app.use('/api/songs', apiKeyAuth, praiseNightSongsRouter);
 
 // Public settings endpoint (used by AppUpdateChecker before login)
 app.get('/api/settings/:id', apiKeyAuth, async (req, res) => {
