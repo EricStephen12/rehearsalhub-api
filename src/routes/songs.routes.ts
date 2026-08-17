@@ -206,4 +206,39 @@ router.get('/subgroup-praise-nights/:id', requireAuth, async (req, res) => {
   }
 });
 
+/** GET /songs/history */
+router.get('/history', requireAuth, async (req, res) => {
+  try {
+    const { songId } = req.query;
+    if (!songId || typeof songId !== 'string') {
+      res.status(400).json({ success: false, error: 'Missing songId' });
+      return;
+    }
+
+    // Try finding the song in any of the song tables
+    const tables = [praiseNightSongs, masterSongs, zoneSongs, subgroupSongs];
+    for (const t of tables) {
+      const [song] = await db.select().from(t).where(eq(t.id, songId)).limit(1);
+      if (song) {
+        let history = (song as any).rawData?.history || (song as any).raw_data?.history;
+        if (typeof history === 'string') {
+          try {
+            history = JSON.parse(history);
+          } catch {
+            history = [];
+          }
+        }
+        res.json({ success: true, data: Array.isArray(history) ? history : [] });
+        return;
+      }
+    }
+    
+    // Not found
+    res.json({ success: true, data: [] });
+  } catch (err) {
+    console.error('[songs/history]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 export default router;
