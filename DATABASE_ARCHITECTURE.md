@@ -6,14 +6,16 @@ This document describes the standardized PostgreSQL/Supabase database schema, ta
 
 ## 1. Songs & Repertoire
 
-| Table Name | Aliases & Views | Purpose & Description |
-| :--- | :--- | :--- |
-| **`songs`** | `praise_night_songs` | **Main Song Repertoire** (~2,400+ songs). Contains all songs prepared, arranged, and rehearsed for Praise Nights and general services. |
-| **`ministered_songs`** | `master_songs` | **All Ministered Songs Catalog** (~800+ songs). The global official repertoire of all ministered songs by Loveworld Singers. |
-| **`zone_songs`** | — | **Zone-Specific Repertoire**. Songs added specifically for local non-HQ zones. |
-| **`subgroup_songs`** | — | **Subgroup Repertoire**. Songs assigned to specialized sub-groups (e.g. Soprano, Alto, Band). |
-| **`praise_nights`** | — | **Praise Night Events**. Event headers and metadata for Praise Night services (Praise Night 27, 28, etc.). |
-| **`ministered_programs`**| `master_programs` | **Ministered Programs**. Program templates for ministered songs services. |
+| Table Name | Purpose & Description |
+| :--- | :--- |
+| **`songs`** | **Main Song Repertoire** (~2,400+ songs). Contains all songs prepared, arranged, and rehearsed for programs, Praise Nights, and services. |
+| **`ministered_songs`** | **All Ministered Songs Catalog** (~800+ songs). The global official repertoire of all ministered songs by Loveworld Singers. |
+| **`zone_songs`** | **Zone-Specific Repertoire**. Songs added specifically for local non-HQ zones. |
+| **`subgroup_songs`** | **Subgroup Repertoire**. Songs assigned to specialized sub-groups (e.g. Soprano, Alto, Band). |
+| **`programs`** | **Programs & Rehearsal Events**. Event headers and metadata for all rehearsal programs (Praise Nights, Midweek, Sunday Special, etc.). |
+| **`zone_programs`** | **Zone Programs**. Rehearsal programs organized specifically by regional zones. |
+| **`subgroup_programs`** | **Subgroup Programs**. Rehearsal programs organized by choir sub-groups (Soprano, Alto, Band, etc.). |
+| **`ministered_programs`** | **Ministered Programs**. Program templates for ministered songs services. |
 
 ---
 
@@ -41,23 +43,23 @@ This document describes the standardized PostgreSQL/Supabase database schema, ta
 
 ## 4. Real-Time Chat & Communications
 
-| Table Name | Aliases & Views | Description |
-| :--- | :--- | :--- |
-| **`chats`** | `chats_v2` | Direct 1-on-1 and group conversation channels (`type`, `participants`, `unread_count`). |
-| **`messages`** | `messages_v2` | Individual chat messages, attachments, and reactions. |
-| **`calls`** | `calls_v2` | Voice and video calling records. |
-| **`user_statuses`** | `statuses_v2` | User stories and status updates. |
+| Table Name | Description |
+| :--- | :--- |
+| **`chats`** | Direct 1-on-1 and group conversation channels (`type`, `participants`, `unread_count`). |
+| **`messages`** | Individual chat messages, attachments, and reactions. |
+| **`calls`** | Voice and video calling records. |
+| **`user_statuses`** | User stories and status updates. |
 
 ---
 
 ## 5. Media Assets
 
-| Table Name | Aliases & Views | Description |
-| :--- | :--- | :--- |
-| **`media_assets`** | `cloudinary_media` | Master cloud media storage records for all audio/video/image assets. |
-| **`zone_media_assets`** | `zone_cloudinary_media`| Zone-specific media files. |
-| **`media_videos`** | — | Video stream records (YouTube / hosted). |
-| **`media_playlists`** | — | Video/media playlists (e.g. Liked Videos). |
+| Table Name | Description |
+| :--- | :--- |
+| **`media_assets`** | Master cloud media storage records for all audio/video/image assets. |
+| **`zone_media_assets`** | Zone-specific media files. |
+| **`media_videos`** | Video stream records (YouTube / hosted). |
+| **`media_playlists`** | Video/media playlists (e.g. Liked Videos). |
 
 ---
 

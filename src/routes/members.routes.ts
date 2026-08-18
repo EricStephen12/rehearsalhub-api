@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { zoneMembers, hqMembers, profiles } from '../schema';
+import { zoneMembers, hqMembers, profiles, adminRequests } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 
 const router = Router();
@@ -193,6 +193,112 @@ router.post('/zone-join', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[members/zone-join]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+// POST /members/request-admin — User submits coordinator access request
+router.post('/request-admin', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const { zoneId, zoneCode, reason, userEmail, userName } = req.body;
+
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    await db.insert(adminRequests).values({
+      id: requestId,
+      userId,
+      userEmail: userEmail || null,
+      userName: userName || null,
+      zoneId: zoneId || null,
+      zoneCode: zoneCode || null,
+      requestedRole: 'zone_admin',
+      status: 'pending',
+      reason: reason || 'Request for Zonal Coordinator access',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      rawData: req.body,
+    });
+
+    res.json({ success: true, message: 'Admin request submitted for HQ review', data: { id: requestId } });
+  } catch (err: any) {
+    console.error('[members/request-admin]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to submit request' });
+  }
+});
+
+// GET /members/admin-requests — List admin requests for HQ
+router.get('/admin-requests', requireAuth, async (_req, res) => {
+  try {
+    const auth = res.locals.auth;
+    if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+    const rows = await db.select().from(adminRequests);
+    const data = rows.sort((a, b) => {
+      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bc - ac;
+    });
+    res.json({ success: true, data });
+  } catch (err: any) {
+    console.error('[members/admin-requests]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch requests' });
+  }
+});
+
+// POST /members/admin-requests/:id/approve — Approve request
+router.post('/admin-requests/:id/approve', requireAuth, async (req, res) => {
+  try {
+    const auth = res.locals.auth;
+    if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    const [reqRow] = await db.select().from(adminRequests).where(eq(adminRequests.id, req.params.id)).limit(1);
+    if (!reqRow) {
+      res.status(404).json({ success: false, error: 'Request not found' });
+      return;
+    }
+
+    // Update user profile role
+    await db.update(profiles).set({ role: 'zone_admin' }).where(eq(profiles.id, reqRow.userId));
+
+    // Update request status
+    await db.update(adminRequests).set({
+      status: 'approved',
+      reviewedBy: auth.userId,
+      reviewedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(adminRequests.id, req.params.id));
+
+    res.json({ success: true, message: 'Request approved and user promoted to Zone Admin' });
+  } catch (err: any) {
+    console.error('[members/admin-requests/:id/approve]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to approve request' });
+  }
+});
+
+// POST /members/admin-requests/:id/reject — Reject request
+router.post('/admin-requests/:id/reject', requireAuth, async (req, res) => {
+  try {
+    const auth = res.locals.auth;
+    if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    await db.update(adminRequests).set({
+      status: 'rejected',
+      reviewedBy: auth.userId,
+      reviewedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(adminRequests.id, req.params.id));
+
+    res.json({ success: true, message: 'Request rejected' });
+  } catch (err: any) {
+    console.error('[members/admin-requests/:id/reject]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to reject request' });
   }
 });
 

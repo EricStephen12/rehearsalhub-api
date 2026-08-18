@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, asc, sql } from 'drizzle-orm';
+import { eq, or, asc, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   ministeredSongs,
@@ -50,14 +50,30 @@ router.get('/ministered/:id', requireAuth, getMinisteredSongByIdHandler);
 // GET /songs/praise-night & GET /songs — Main Repertoire
 const getSongsHandler = async (req: any, res: any) => {
   try {
-    const { praiseNightId, zoneId } = req.query;
-    const rows = await db.select().from(songs)
-      .where(
-        praiseNightId ? eq(songs.praiseNightId, praiseNightId as string) :
-        zoneId ? eq(songs.zoneId, zoneId as string) :
-        undefined
-      )
-      .orderBy(asc(songs.title));
+    const { praiseNightId, programId, zoneId } = req.query;
+    const targetProgramId = (programId || praiseNightId) as string | undefined;
+
+    let rows: any[] = [];
+    if (targetProgramId && zoneId) {
+      rows = await db.select().from(songs)
+        .where(or(eq(songs.praiseNightId, targetProgramId), eq(songs.zoneId, zoneId as string)))
+        .orderBy(asc(songs.title));
+    } else if (targetProgramId) {
+      rows = await db.select().from(songs)
+        .where(eq(songs.praiseNightId, targetProgramId))
+        .orderBy(asc(songs.title));
+    } else if (zoneId) {
+      const [mainRows, zRows] = await Promise.all([
+        db.select().from(songs).where(eq(songs.zoneId, zoneId as string)),
+        db.select().from(zoneSongs).where(eq(zoneSongs.zoneId, zoneId as string)),
+      ]);
+      rows = [...mainRows, ...zRows.map(mergeRawRow)].sort((a, b) =>
+        String(a.title || '').localeCompare(String(b.title || ''))
+      );
+    } else {
+      rows = await db.select().from(songs).orderBy(asc(songs.title));
+    }
+
     res.json({ success: true, count: rows.length, data: rows });
   } catch (err) {
     console.error('[songs/praise-night]', err);
@@ -65,6 +81,7 @@ const getSongsHandler = async (req: any, res: any) => {
   }
 };
 router.get('/praise-night', requireAuth, getSongsHandler);
+router.get('/program', requireAuth, getSongsHandler);
 
 const getSongByIdHandler = async (req: any, res: any) => {
   try {

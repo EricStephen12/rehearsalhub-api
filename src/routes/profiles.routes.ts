@@ -200,7 +200,42 @@ router.patch('/:userId', requireAuth, async (req, res) => {
     .returning();
 
   broadcast('profile', userId, updated);
-  res.json({ success: true, data: updated });
+  res.json({ success: true, message: 'Profile updated' });
+});
+
+// PATCH /profiles/:userId/role — HQ Admin updates user role
+router.patch('/:userId/role', requireAuth, async (req, res) => {
+  try {
+    const auth = res.locals.auth;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    if (!isHqAdmin) {
+      res.status(403).json({ success: false, error: 'Only HQ Admins can update roles' });
+      return;
+    }
+
+    const { userId } = req.params;
+    const { role } = req.body; // 'member', 'zone_admin', 'hq_admin'
+
+    if (!role || !['member', 'zone_admin', 'hq_admin'].includes(role)) {
+      res.status(400).json({ success: false, error: 'Invalid role specified' });
+      return;
+    }
+
+    const hasHqAccess = role === 'hq_admin';
+    await db
+      .update(profiles)
+      .set({
+        role,
+        hasHqAccess,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(profiles.id, userId));
+
+    res.json({ success: true, message: `Role updated to ${role}` });
+  } catch (err: any) {
+    console.error('[profiles/:userId/role]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Unable to update role' });
+  }
 });
 
 export default router;

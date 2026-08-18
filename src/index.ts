@@ -79,6 +79,7 @@ app.use('/zones', zonesRouter);
 app.use('/members', membersRouter);
 app.use('/schedule', scheduleRouter);
 app.use('/praise-nights', praiseNightsRouter);
+app.use('/programs', praiseNightsRouter);
 app.use('/chats', chatsRouter);
 app.use('/calls', callsRouter);
 app.use('/subscriptions', subscriptionsRouter);
@@ -120,6 +121,14 @@ app.get('/api/settings/:id', apiKeyAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
+});
+
+// Global error handler
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[API Global Error]', err?.stack || err);
+  const status = typeof err?.status === 'number' ? err.status : 500;
+  const message = err?.message || 'Unable to complete request';
+  res.status(status).json({ success: false, error: message });
 });
 
 // 404 handler

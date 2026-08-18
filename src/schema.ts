@@ -101,32 +101,52 @@ export const subgroupSongs = pgTable('subgroup_songs', {
 });
 
 /**
- * PRAISE NIGHT EVENTS
- * Event metadata for individual Praise Nights (e.g. Praise Night 27, 28, etc.).
+ * PROGRAMS (formerly praise_nights)
+ * Event and rehearsal program metadata (e.g. Praise Night 27, Midweek, Sunday Special, etc.).
  */
-export const praiseNights = pgTable('praise_nights', {
+export const programs = pgTable('programs', {
   id: text('id').primaryKey(),
   name: text('name'),
   date: text('date'),
   scope: text('scope'),
   zoneId: text('zone_id'),
-  category: text('category'),
+  category: text('category'), // 'ongoing' | 'pre-rehearsal' | 'archive'
+  status: text('status').default('pre-rehearsal'), // 'ongoing' | 'pre-rehearsal' | 'archive' | 'draft'
+  isActive: boolean('is_active').default(false),
+  isArchived: boolean('is_archived').default(false),
   location: text('location'),
   bannerImage: text('banner_image'),
   songs: jsonb('songs'),
+  songIds: jsonb('song_ids'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
   rawData: jsonb('raw_data'),
 });
 
-export const subgroupPraiseNights = pgTable('subgroup_praise_nights', {
+export const praiseNights = programs;
+
+/**
+ * SUBGROUP PROGRAMS (formerly subgroup_praise_nights)
+ * Rehearsal programs organized by specific choir sub-groups.
+ */
+export const subgroupPrograms = pgTable('subgroup_programs', {
   id: text('id').primaryKey(),
   name: text('name'),
   date: text('date'),
   zoneId: text('zone_id'),
   subGroupId: text('sub_group_id'),
   subGroupName: text('sub_group_name'),
+  category: text('category'),
+  status: text('status').default('pre-rehearsal'),
+  isActive: boolean('is_active').default(false),
+  isArchived: boolean('is_archived').default(false),
   songIds: jsonb('song_ids'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
   rawData: jsonb('raw_data'),
 });
+
+export const subgroupPraiseNights = subgroupPrograms;
 
 // ============================================================================
 // 2. USERS, PROFILES & MEMBERSHIP (IDENTITY SOURCE OF TRUTH)
@@ -251,6 +271,27 @@ export const hqMembers = pgTable('hq_members', {
   userEmail: text('user_email'),
   userName: text('user_name'),
   joinedAt: timestamp('joined_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at'),
+  rawData: jsonb('raw_data'),
+});
+
+/**
+ * ADMIN REQUESTS
+ * Tracks self-service coordinator / admin role upgrade requests submitted by users for HQ approval.
+ */
+export const adminRequests = pgTable('admin_requests', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  userEmail: text('user_email'),
+  userName: text('user_name'),
+  zoneId: text('zone_id'),
+  zoneCode: text('zone_code'),
+  requestedRole: text('requested_role').default('zone_admin'),
+  status: text('status').default('pending'), // 'pending', 'approved', 'rejected'
+  reason: text('reason'),
+  reviewedBy: text('reviewed_by'),
+  reviewedAt: timestamp('reviewed_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at'),
   rawData: jsonb('raw_data'),
@@ -568,10 +609,25 @@ export const userNotifications = pgTable('user_notifications', {
   rawData: jsonb('raw_data'),
 });
 
-export const zonePraiseNights = pgTable('zone_praise_nights', {
+export const zonePrograms = pgTable('zone_programs', {
   id: text('id').primaryKey(),
+  name: text('name'),
+  date: text('date'),
+  zoneId: text('zone_id'),
+  category: text('category'),
+  status: text('status').default('pre-rehearsal'),
+  isActive: boolean('is_active').default(false),
+  isArchived: boolean('is_archived').default(false),
+  location: text('location'),
+  bannerImage: text('banner_image'),
+  songs: jsonb('songs'),
+  songIds: jsonb('song_ids'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
   rawData: jsonb('raw_data'),
 });
+
+export const zonePraiseNights = zonePrograms;
 
 export const pageCategories = pgTable('page_categories', {
   id: text('id').primaryKey(),
