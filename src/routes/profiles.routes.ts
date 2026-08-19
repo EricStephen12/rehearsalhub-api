@@ -104,6 +104,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 // GET /profiles/directory — lightweight contact list for chat pickers
 // Optional ?ids=id1,id2,id3 (comma-separated, max 50)
+// HQ admins see all profiles. Zone admins/members see profiles in their zone only.
 router.get('/directory', requireAuth, async (req, res) => {
   const parsedIds = directoryIdsQuerySchema.safeParse(
     typeof req.query.ids === 'string' ? req.query.ids : undefined,
@@ -113,13 +114,38 @@ router.get('/directory', requireAuth, async (req, res) => {
     return;
   }
 
+  const auth = res.locals.auth;
   const idList = parsedIds.data;
-  const rows =
-    idList.length > 0
-      ? await db.select().from(profiles).where(inArray(profiles.id, idList))
-      : await db.select().from(profiles);
 
-  res.json({ success: true, data: rows.map(directoryDto) });
+  // If specific IDs are requested, just return those (used by chat participant lookups)
+  if (idList.length > 0) {
+    const rows = await db.select().from(profiles).where(inArray(profiles.id, idList));
+    res.json({ success: true, data: rows.map(directoryDto) });
+    return;
+  }
+
+  // HQ admins can see the full directory
+  const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+  if (isHqAdmin) {
+    const rows = await db.select().from(profiles);
+    res.json({ success: true, data: rows.map(directoryDto) });
+    return;
+  }
+
+  // Zone members and zone admins: scope to their zone via zone_code in rawData
+  // This gives members a contact list of people in their zone for chats
+  const callerZoneId = auth.zoneId as string | null;
+  if (callerZoneId) {
+    const rows = await db.select().from(profiles).where(
+      sql`(${profiles.rawData}->>'zone_code' = ${callerZoneId} OR ${profiles.rawData}->>'zoneCode' = ${callerZoneId})`
+    );
+    res.json({ success: true, data: rows.map(directoryDto) });
+    return;
+  }
+
+  // No zone on the token — return just themselves so they can still function
+  const [self] = await db.select().from(profiles).where(eq(profiles.id, auth.userId)).limit(1);
+  res.json({ success: true, data: self ? [directoryDto(self)] : [] });
 });
 
 // GET /profiles/:userId

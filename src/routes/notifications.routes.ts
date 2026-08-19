@@ -1,23 +1,24 @@
 import { Router } from 'express';
-import { desc, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { notifications, userGroups, userNotifications } from '../schema';
+import { notifications, userGroups, userNotifications, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
 
-/** GET /notifications — scoped list with is_read (reads Supabase only). */
+/** GET /notifications — per-user read state, audience-scoped */
 router.get('/', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
 
     const [notifRows, groupRows, readRows] = await Promise.all([
-      db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(50),
+      db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(100),
       db
         .select()
         .from(userGroups)
         .where(sql`${userGroups.rawData}->>'user_id' = ${userId} OR ${userGroups.rawData}->>'userId' = ${userId}`),
+      // Per-user read receipts stored with composite key userId_notificationId
       db
         .select()
         .from(userNotifications)
@@ -59,7 +60,6 @@ router.get('/', requireAuth, async (_req, res) => {
         let visible = audience === 'all';
         if (audience === 'individual' && targetUser === userId) visible = true;
         if (audience === 'group' && targetGroup && groupNames.has(targetGroup)) visible = true;
-
         if (!visible) return null;
 
         return {
@@ -81,6 +81,129 @@ router.get('/', requireAuth, async (_req, res) => {
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
 });
+
+/** PATCH /notifications/:id — mark single notification read for this user */
+router.patch('/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const notifId = req.params.id;
+    const { is_read } = req.body;
+
+    if (is_read === true) {
+      // Upsert a per-user read receipt using composite key
+      const receiptId = `${userId}_${notifId}`;
+      const [existing] = await db
+        .select()
+        .from(userNotifications)
+        .where(eq(userNotifications.id, receiptId))
+        .limit(1);
+
+      if (!existing) {
+        await db.insert(userNotifications).values({
+          id: receiptId,
+          rawData: {
+            user_id: userId,
+            notification_id: notifId,
+            read_at: new Date().toISOString(),
+          },
+        });
+      }
+    } else if (is_read === false) {
+      await db.delete(userNotifications).where(eq(userNotifications.id, `${userId}_${notifId}`));
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[notifications/:id PATCH]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** PATCH /notifications/read-all — mark all visible notifications read for this user */
+router.patch('/read-all', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+
+    // Get all notification IDs
+    const notifRows = await db.select({ id: notifications.id }).from(notifications);
+
+    // Fetch existing read receipts to avoid duplicate inserts
+    const existingReceipts = await db
+      .select({ id: userNotifications.id })
+      .from(userNotifications)
+      .where(sql`${userNotifications.id} LIKE ${userId + '_%'}`);
+    const existingIds = new Set(existingReceipts.map((r) => r.id));
+
+    const toInsert = notifRows
+      .filter((n) => !existingIds.has(`${userId}_${n.id}`))
+      .map((n) => ({
+        id: `${userId}_${n.id}`,
+        rawData: {
+          user_id: userId,
+          notification_id: n.id,
+          read_at: new Date().toISOString(),
+        },
+      }));
+
+    if (toInsert.length > 0) {
+      // Insert in batches of 50
+      for (let i = 0; i < toInsert.length; i += 50) {
+        await db.insert(userNotifications).values(toInsert.slice(i, i + 50));
+      }
+    }
+
+    res.json({ success: true, marked: toInsert.length });
+  } catch (err) {
+    console.error('[notifications/read-all PATCH]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** POST /notifications/broadcast — admin broadcast (creates a notification record) */
+router.post('/broadcast', requireAuth, async (req, res) => {
+  try {
+    const auth = res.locals.auth;
+    const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
+    if (!isAdmin) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    const { title, message, type, category, priority, targetAudience, targetZoneId, targetUserId, senderId, senderName, actionUrl } = req.body;
+
+    if (!title?.trim() || !message?.trim()) {
+      res.status(400).json({ success: false, error: 'title and message are required' });
+      return;
+    }
+
+    const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    await db.insert(notifications).values({
+      id,
+      title: title.trim(),
+      message: message.trim(),
+      type: type || 'info',
+      category: category || 'admin',
+      priority: priority || 'medium',
+      targetAudience: targetAudience || 'all',
+      targetUserId: targetUserId || null,
+      zoneId: targetZoneId || null,
+      senderId: senderId || auth.userId,
+      actionUrl: actionUrl || null,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      rawData: {
+        sender_name: senderName || auth.userId,
+        target_zone_id: targetZoneId || null,
+      },
+    });
+
+    res.json({ success: true, data: { id } });
+  } catch (err) {
+    console.error('[notifications/broadcast]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 router.post('/send', requireAuth, async (req, res) => {
   try {
     const { recipientIds, title, body, data } = req.body;
@@ -90,9 +213,7 @@ router.post('/send', requireAuth, async (req, res) => {
     }
 
     const { inArray } = await import('drizzle-orm');
-    const { profiles } = await import('../schema');
 
-    // Fetch the rawData for the recipient profiles to get their expo_push_token
     const targetProfiles = await db
       .select({ id: profiles.id, rawData: profiles.rawData })
       .from(profiles)
@@ -107,7 +228,6 @@ router.post('/send', requireAuth, async (req, res) => {
     }
 
     if (expoTokens.length === 0) {
-      // Nobody to send to, but we succeeded in processing the request
       res.json({ success: true, message: 'No valid push tokens found for recipients.' });
       return;
     }
@@ -143,5 +263,4 @@ router.post('/send', requireAuth, async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to send push notifications.' });
   }
 });
-
 export default router;

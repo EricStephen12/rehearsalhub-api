@@ -8,21 +8,26 @@ import { mergeRawRow } from '../lib/rawRow';
 const router = Router();
 
 // GET /programs or /praise-nights
+// HQ admins see all programs. Zone admins/members auto-scope to their zone via JWT.
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const { zoneId, category } = req.query as { zoneId?: string; category?: string };
+    const { zoneId: queryZoneId, category } = req.query as { zoneId?: string; category?: string };
+    const auth = res.locals.auth;
+
+    // HQ admins see everything; everyone else scopes to their zone
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const effectiveZoneId = queryZoneId || (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
     let rows: any[] = [];
-    if (zoneId && zoneId !== 'zone-001' && !zoneId.toLowerCase().includes('hq') && zoneId !== 'ZONE001') {
-      // Query zone programs first
+
+    if (effectiveZoneId && effectiveZoneId !== 'zone-001' && !effectiveZoneId.toLowerCase().includes('hq') && effectiveZoneId !== 'ZONE001') {
       const [zRows, globalRows] = await Promise.all([
         db.select().from(zonePrograms),
-        db.select().from(programs).where(eq(programs.zoneId, zoneId)),
+        db.select().from(programs).where(eq(programs.zoneId, effectiveZoneId)),
       ]);
-      const mergedZ = zRows.map(mergeRawRow).filter((r: any) => !r.zoneId || r.zoneId === zoneId || r.zone_id === zoneId);
+      const mergedZ = zRows.map(mergeRawRow).filter((r: any) => !r.zoneId || r.zoneId === effectiveZoneId || r.zone_id === effectiveZoneId);
       const mergedGlobal = globalRows.map(mergeRawRow);
       rows = [...mergedZ, ...mergedGlobal];
-      // If zone has no programs yet, fall back to global programs
       if (rows.length === 0) {
         const allGlobal = await db.select().from(programs);
         rows = allGlobal.map(mergeRawRow);
