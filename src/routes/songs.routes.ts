@@ -265,4 +265,291 @@ router.get('/history', requireAuth, async (req, res) => {
   }
 });
 
+// Helper for song creation
+const createSongHandler = async (req: any, res: any) => {
+  try {
+    const body = req.body || {};
+    const songId = body.id || `song_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const zoneId = body.zoneId || body.zone_id;
+    const praiseNightId = body.praiseNightId || body.praise_night_id || body.programId || body.program_id;
+
+    const isZoneSpecific = zoneId && zoneId !== 'zone-001' && !zoneId.toLowerCase().includes('hq') && zoneId !== 'ZONE001';
+
+    const songRow = {
+      id: songId,
+      title: body.title || 'Untitled Song',
+      key: body.key || null,
+      tempo: body.tempo || null,
+      lyrics: body.lyrics || null,
+      writer: body.writer || null,
+      category: body.category || null,
+      audioFile: body.audioFile || body.audio_file || null,
+      audioUrls: body.audioUrls || body.audio_urls || null,
+      conductor: body.conductor || null,
+      leadSinger: body.leadSinger || body.lead_singer || null,
+      drummer: body.drummer || null,
+      zoneId: zoneId || null,
+      praiseNightId: praiseNightId || null,
+      status: body.status || 'unheard',
+      isActive: Boolean(body.isActive),
+      categories: body.categories || (body.category ? [body.category] : []),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date(),
+      rawData: { ...body, id: songId, zoneId, praiseNightId },
+    };
+
+    if (isZoneSpecific) {
+      await db.insert(zoneSongs).values({
+        id: songId,
+        title: songRow.title,
+        key: songRow.key,
+        tempo: songRow.tempo,
+        zoneId: songRow.zoneId,
+        status: songRow.status,
+        audioFile: songRow.audioFile,
+        categories: songRow.categories,
+        rawData: songRow.rawData,
+      });
+    }
+
+    await db.insert(songs).values(songRow).onConflictDoUpdate({
+      target: songs.id,
+      set: songRow,
+    });
+
+    res.status(201).json({ success: true, message: 'Song created successfully', data: songRow });
+  } catch (err) {
+    console.error('[songs/create]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+};
+
+router.post('/', requireAuth, createSongHandler);
+router.post('/praise-night', requireAuth, createSongHandler);
+
+// Helper for song update
+const updateSongHandler = async (req: any, res: any) => {
+  try {
+    const songId = req.params.id;
+    const body = req.body || {};
+
+    const [existing] = await db.select().from(songs).where(eq(songs.id, songId)).limit(1);
+    const [zExisting] = !existing ? await db.select().from(zoneSongs).where(eq(zoneSongs.id, songId)).limit(1) : [null];
+
+    if (!existing && !zExisting) {
+      res.status(404).json({ success: false, error: 'Song not found' });
+      return;
+    }
+
+    const prevRaw = (existing?.rawData || zExisting?.rawData || {}) as Record<string, unknown>;
+    const updatedRaw = { ...prevRaw, ...body };
+
+    const updateFields: Record<string, any> = {
+      updatedAt: new Date(),
+      rawData: updatedRaw,
+    };
+
+    if (body.title !== undefined) updateFields.title = body.title;
+    if (body.key !== undefined) updateFields.key = body.key;
+    if (body.tempo !== undefined) updateFields.tempo = body.tempo;
+    if (body.lyrics !== undefined) updateFields.lyrics = body.lyrics;
+    if (body.writer !== undefined) updateFields.writer = body.writer;
+    if (body.category !== undefined) updateFields.category = body.category;
+    if (body.audioFile !== undefined || body.audio_file !== undefined) updateFields.audioFile = body.audioFile || body.audio_file;
+    if (body.audioUrls !== undefined || body.audio_urls !== undefined) updateFields.audioUrls = body.audioUrls || body.audio_urls;
+    if (body.conductor !== undefined) updateFields.conductor = body.conductor;
+    if (body.leadSinger !== undefined || body.lead_singer !== undefined) updateFields.leadSinger = body.leadSinger || body.lead_singer;
+    if (body.drummer !== undefined) updateFields.drummer = body.drummer;
+    if (body.status !== undefined) updateFields.status = body.status;
+    if (body.isActive !== undefined) updateFields.isActive = Boolean(body.isActive);
+    if (body.categories !== undefined) updateFields.categories = body.categories;
+    if (body.praiseNightId !== undefined) updateFields.praiseNightId = body.praiseNightId;
+    if (body.zoneId !== undefined) updateFields.zoneId = body.zoneId;
+
+    if (existing) {
+      await db.update(songs).set(updateFields).where(eq(songs.id, songId));
+    }
+    if (zExisting) {
+      await db.update(zoneSongs).set(updateFields).where(eq(zoneSongs.id, songId));
+    }
+
+    res.json({ success: true, message: 'Song updated successfully', data: { id: songId, ...updateFields } });
+  } catch (err) {
+    console.error('[songs/update]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+};
+
+router.patch('/:id', requireAuth, updateSongHandler);
+router.patch('/praise-night/:id', requireAuth, updateSongHandler);
+
+// Toggle song status (heard / unheard)
+const toggleStatusHandler = async (req: any, res: any) => {
+  try {
+    const songId = req.params.id;
+    const { status } = req.body;
+
+    if (!status) {
+      res.status(400).json({ success: false, error: 'Missing status parameter' });
+      return;
+    }
+
+    await Promise.all([
+      db.update(songs).set({ status, updatedAt: new Date() }).where(eq(songs.id, songId)),
+      db.update(zoneSongs).set({ status }).where(eq(zoneSongs.id, songId)),
+    ]);
+
+    res.json({ success: true, message: `Song status updated to ${status}` });
+  } catch (err) {
+    console.error('[songs/:id/status]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+};
+
+router.patch('/:id/status', requireAuth, toggleStatusHandler);
+router.patch('/praise-night/:id/status', requireAuth, toggleStatusHandler);
+
+// Toggle song active status
+const toggleActiveHandler = async (req: any, res: any) => {
+  try {
+    const songId = req.params.id;
+    const { isActive, praiseNightId } = req.body;
+
+    // If activating a song, optionally deactivate other songs in the same program
+    if (isActive && praiseNightId) {
+      await db.update(songs)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(eq(songs.praiseNightId, praiseNightId));
+    }
+
+    await db.update(songs)
+      .set({ isActive: Boolean(isActive), updatedAt: new Date() })
+      .where(eq(songs.id, songId));
+
+    res.json({ success: true, message: `Song active state set to ${Boolean(isActive)}` });
+  } catch (err) {
+    console.error('[songs/:id/active]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+};
+
+router.patch('/:id/active', requireAuth, toggleActiveHandler);
+router.patch('/praise-night/:id/active', requireAuth, toggleActiveHandler);
+
+// Delete song
+const deleteSongHandler = async (req: any, res: any) => {
+  try {
+    const songId = req.params.id;
+
+    await Promise.all([
+      db.delete(songs).where(eq(songs.id, songId)),
+      db.delete(zoneSongs).where(eq(zoneSongs.id, songId)),
+      db.delete(subgroupSongs).where(eq(subgroupSongs.id, songId)),
+    ]);
+
+    res.json({ success: true, message: 'Song deleted successfully' });
+  } catch (err) {
+    console.error('[songs/delete]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+};
+
+router.delete('/:id', requireAuth, deleteSongHandler);
+router.delete('/praise-night/:id', requireAuth, deleteSongHandler);
+
+// Master / Ministered Songs Write routes
+router.post('/master', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const songId = body.id || `ms_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    const row = {
+      id: songId,
+      title: body.title || 'Untitled Song',
+      key: body.key || null,
+      tempo: body.tempo || null,
+      lyrics: body.lyrics || null,
+      writer: body.writer || null,
+      solfa: body.solfa || body.solfas || null,
+      category: body.category || null,
+      imageUrl: body.imageUrl || body.image_url || null,
+      audioFile: body.audioFile || body.audio_file || null,
+      audioUrls: body.audioUrls || body.audio_urls || null,
+      conductor: body.conductor || null,
+      leadSinger: body.leadSinger || body.lead_singer || null,
+      drummer: body.drummer || null,
+      bassGuitarist: body.bassGuitarist || body.bass_guitarist || null,
+      leadKeyboardist: body.leadKeyboardist || body.lead_keyboardist || null,
+      categories: body.categories || [],
+      customParts: body.customParts || body.custom_parts || [],
+      publishedAt: new Date(),
+      updatedAt: new Date(),
+      sourceType: body.sourceType || 'manual',
+      isHqOnly: Boolean(body.isHqOnly),
+      rawData: { ...body, id: songId },
+    };
+
+    await db.insert(ministeredSongs).values(row);
+    res.status(201).json({ success: true, message: 'Master song created', data: row });
+  } catch (err) {
+    console.error('[songs/master POST]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+router.patch('/master/:id', requireAuth, async (req, res) => {
+  try {
+    const songId = req.params.id;
+    const body = req.body || {};
+
+    const [existing] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, songId)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Master song not found' });
+      return;
+    }
+
+    const prevRaw = (existing.rawData || {}) as Record<string, unknown>;
+    const updateFields: Record<string, any> = {
+      updatedAt: new Date(),
+      rawData: { ...prevRaw, ...body },
+    };
+
+    if (body.title !== undefined) updateFields.title = body.title;
+    if (body.key !== undefined) updateFields.key = body.key;
+    if (body.tempo !== undefined) updateFields.tempo = body.tempo;
+    if (body.lyrics !== undefined) updateFields.lyrics = body.lyrics;
+    if (body.writer !== undefined) updateFields.writer = body.writer;
+    if (body.solfa !== undefined || body.solfas !== undefined) updateFields.solfa = body.solfa || body.solfas;
+    if (body.category !== undefined) updateFields.category = body.category;
+    if (body.imageUrl !== undefined || body.image_url !== undefined) updateFields.imageUrl = body.imageUrl || body.image_url;
+    if (body.audioFile !== undefined || body.audio_file !== undefined) updateFields.audioFile = body.audioFile || body.audio_file;
+    if (body.audioUrls !== undefined || body.audio_urls !== undefined) updateFields.audioUrls = body.audioUrls || body.audio_urls;
+    if (body.conductor !== undefined) updateFields.conductor = body.conductor;
+    if (body.leadSinger !== undefined || body.lead_singer !== undefined) updateFields.leadSinger = body.leadSinger || body.lead_singer;
+    if (body.drummer !== undefined) updateFields.drummer = body.drummer;
+    if (body.bassGuitarist !== undefined || body.bass_guitarist !== undefined) updateFields.bassGuitarist = body.bassGuitarist || body.bass_guitarist;
+    if (body.leadKeyboardist !== undefined || body.lead_keyboardist !== undefined) updateFields.leadKeyboardist = body.leadKeyboardist || body.lead_keyboardist;
+    if (body.categories !== undefined) updateFields.categories = body.categories;
+    if (body.customParts !== undefined || body.custom_parts !== undefined) updateFields.customParts = body.customParts || body.custom_parts;
+
+    await db.update(ministeredSongs).set(updateFields).where(eq(ministeredSongs.id, songId));
+    res.json({ success: true, message: 'Master song updated', data: { id: songId, ...updateFields } });
+  } catch (err) {
+    console.error('[songs/master PATCH]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+router.delete('/master/:id', requireAuth, async (req, res) => {
+  try {
+    const songId = req.params.id;
+    await db.delete(ministeredSongs).where(eq(ministeredSongs.id, songId));
+    res.json({ success: true, message: 'Master song deleted' });
+  } catch (err) {
+    console.error('[songs/master DELETE]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 export default router;
+

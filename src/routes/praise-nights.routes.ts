@@ -368,5 +368,121 @@ router.post('/:id/copy-songs', requireAuth, async (req, res) => {
   }
 });
 
+// PATCH /programs/:id — Update program metadata
+router.patch('/:id', requireAuth, async (req, res) => {
+  try {
+    const programId = req.params.id;
+    const body = req.body || {};
+
+    const [prog] = await db.select().from(programs).where(eq(programs.id, programId)).limit(1);
+    const [zProg] = !prog ? await db.select().from(zonePrograms).where(eq(zonePrograms.id, programId)).limit(1) : [null];
+    const existing = prog || zProg;
+
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Program not found' });
+      return;
+    }
+
+    const prevRaw = (existing.rawData && typeof existing.rawData === 'object' && !Array.isArray(existing.rawData))
+      ? (existing.rawData as Record<string, unknown>)
+      : {};
+
+    const updateFields: Record<string, any> = {
+      updatedAt: new Date(),
+      rawData: { ...prevRaw, ...body },
+    };
+
+    if (body.name !== undefined) updateFields.name = body.name;
+    if (body.date !== undefined) updateFields.date = body.date;
+    if (body.location !== undefined) updateFields.location = body.location;
+    if (body.bannerImage !== undefined) updateFields.bannerImage = body.bannerImage;
+    if (body.category !== undefined) {
+      updateFields.category = body.category;
+      if (body.category === 'ongoing') {
+        updateFields.isActive = true;
+        updateFields.isArchived = false;
+        updateFields.status = 'ongoing';
+      } else if (body.category === 'archive') {
+        updateFields.isActive = false;
+        updateFields.isArchived = true;
+        updateFields.status = 'archive';
+      }
+    }
+    if (body.status !== undefined) {
+      updateFields.status = body.status;
+      updateFields.isActive = body.status === 'ongoing';
+      updateFields.isArchived = body.status === 'archive';
+    }
+    if (body.songs !== undefined) updateFields.songs = body.songs;
+    if (body.songIds !== undefined) updateFields.songIds = body.songIds;
+
+    let updatedRow: any = null;
+    if (prog) {
+      const [u] = await db.update(programs).set(updateFields).where(eq(programs.id, programId)).returning();
+      updatedRow = u;
+    } else {
+      const [u] = await db.update(zonePrograms).set(updateFields).where(eq(zonePrograms.id, programId)).returning();
+      updatedRow = u;
+    }
+
+    res.json({ success: true, message: 'Program updated successfully', data: mergeRawRow(updatedRow) });
+  } catch (err) {
+    console.error('[programs/:id PATCH]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+// DELETE /programs/:id — Delete program
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    const programId = req.params.id;
+
+    await Promise.all([
+      db.delete(programs).where(eq(programs.id, programId)),
+      db.delete(zonePrograms).where(eq(zonePrograms.id, programId)),
+    ]);
+
+    res.json({ success: true, message: 'Program deleted successfully' });
+  } catch (err) {
+    console.error('[programs/:id DELETE]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+// PATCH /programs/:id/category-order — Update category order within program
+router.patch('/:id/category-order', requireAuth, async (req, res) => {
+  try {
+    const programId = req.params.id;
+    const { categoryOrder } = req.body;
+
+    const [prog] = await db.select().from(programs).where(eq(programs.id, programId)).limit(1);
+    const [zProg] = !prog ? await db.select().from(zonePrograms).where(eq(zonePrograms.id, programId)).limit(1) : [null];
+    const existing = prog || zProg;
+
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Program not found' });
+      return;
+    }
+
+    const prevRaw = (existing.rawData && typeof existing.rawData === 'object' && !Array.isArray(existing.rawData))
+      ? (existing.rawData as Record<string, unknown>)
+      : {};
+
+    const updatedRaw = { ...prevRaw, categoryOrder };
+
+    if (prog) {
+      await db.update(programs).set({ rawData: updatedRaw, updatedAt: new Date() }).where(eq(programs.id, programId));
+    } else {
+      await db.update(zonePrograms).set({ rawData: updatedRaw, updatedAt: new Date() }).where(eq(zonePrograms.id, programId));
+    }
+
+    res.json({ success: true, message: 'Category order updated successfully' });
+  } catch (err) {
+    console.error('[programs/:id/category-order]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 export default router;
+
 
