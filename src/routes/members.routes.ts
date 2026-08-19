@@ -196,6 +196,34 @@ router.post('/zone-join', requireAuth, async (req, res) => {
   }
 });
 
+// POST /members/zone-leave — leave a zone
+router.post('/zone-leave', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const { zone_id, is_hq } = req.body;
+
+    if (!zone_id) {
+      res.status(400).json({ success: false, error: 'Missing zone_id' });
+      return;
+    }
+
+    if (is_hq) {
+      await db.delete(hqMembers).where(
+        sql`${hqMembers.userId} = ${userId} AND ${hqMembers.hqGroupId} = ${zone_id}`
+      );
+    } else {
+      await db.delete(zoneMembers).where(
+        sql`${zoneMembers.userId} = ${userId} AND ${zoneMembers.zoneId} = ${zone_id}`
+      );
+    }
+
+    res.json({ success: true, message: 'Successfully left zone' });
+  } catch (err) {
+    console.error('[members/zone-leave]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 // POST /members/request-admin — User submits coordinator access request
 router.post('/request-admin', requireAuth, async (req, res) => {
   try {
