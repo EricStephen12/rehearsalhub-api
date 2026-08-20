@@ -28,6 +28,7 @@ import subgroupsRouter from './routes/subgroups.routes';
 import audioRouter from './routes/audio.routes';
 import kingspayRouter from './routes/kingspay.routes';
 import lexiconRouter from './routes/lexicon.routes';
+import mediaRouter from './routes/media.routes';
 import { writesRouter } from './routes/writes.routes';
 import { createWsServer } from './ws/wsServer';
 
@@ -111,6 +112,8 @@ app.use('/subgroups', subgroupsRouter);
 app.use('/audio', audioRouter);
 app.use('/kingspay', kingspayRouter);
 app.use('/lexicon', lexiconRouter);
+app.use('/media', mediaRouter);
+app.use('/media-videos', mediaRouter);
 
 // Write endpoints — require JWT
 app.use('/', writesRouter);
@@ -120,6 +123,7 @@ app.use('/api/master-songs', apiKeyAuth, masterSongsRouter);
 app.use('/api/ministered-songs', apiKeyAuth, masterSongsRouter);
 app.use('/api/praise-night-songs', apiKeyAuth, praiseNightSongsRouter);
 app.use('/api/songs', apiKeyAuth, praiseNightSongsRouter);
+app.use('/api/media', apiKeyAuth, mediaRouter);
 
 // Public settings endpoint (used by AppUpdateChecker before login)
 app.get('/api/settings/:id', apiKeyAuth, async (req, res) => {

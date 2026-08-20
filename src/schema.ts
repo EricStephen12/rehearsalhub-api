@@ -579,6 +579,26 @@ export const mediaVideos = pgTable('media_videos', {
   rawData: jsonb('raw_data'),
 });
 
+export const mediaAssets = pgTable('media_assets', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
+export const zoneMediaAssets = pgTable('zone_media_assets', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
+export const mediaCategories = pgTable('media_categories', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
+export const mediaPlaylists = pgTable('media_playlists', {
+  id: text('id').primaryKey(),
+  rawData: jsonb('raw_data'),
+});
+
 export const categories = pgTable('categories', {
   id: text('id').primaryKey(),
   rawData: jsonb('raw_data'),
