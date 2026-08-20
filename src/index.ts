@@ -31,16 +31,26 @@ import lexiconRouter from './routes/lexicon.routes';
 import { writesRouter } from './routes/writes.routes';
 import { createWsServer } from './ws/wsServer';
 
+// Global process crash prevention
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[API Unhandled Rejection at]:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[API Uncaught Exception]:', error);
+});
+
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
-// Rate limiter: 200 requests per 15 minutes per IP
+// Rate limiter: 5000 requests per 15 minutes per IP (won't choke normal active admin sessions)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 5000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.path === '/health' || req.path === '/',
   message: { success: false, error: 'Too many requests, please try again later.' },
 });
 
@@ -49,9 +59,9 @@ app.use(cors());
 app.use(express.json());
 app.use(limiter);
 
-// Health check — no auth needed
+// Health check — no auth needed (Crucial for Railway zero-downtime health probes)
 app.get('/health', (_, res) => {
-  res.json({ status: 'ok', service: 'rehearsalhub-api', timestamp: new Date().toISOString() });
+  res.status(200).json({ status: 'ok', service: 'rehearsalhub-api', timestamp: new Date().toISOString() });
 });
 
 // Root info — no auth needed

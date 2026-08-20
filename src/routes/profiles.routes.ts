@@ -19,22 +19,46 @@ function asRaw(raw: unknown): Record<string, unknown> {
 
 function directoryDto(row: ProfileRow) {
   const raw = asRaw(row.rawData);
+  const avatar = row.avatarUrl ?? (typeof raw.avatar === 'string' ? raw.avatar : (typeof raw.profile_image_url === 'string' ? raw.profile_image_url : null));
+  const phone = typeof raw.phone === 'string' ? raw.phone : (typeof raw.phone_number === 'string' ? raw.phone_number : (typeof raw.phoneNumber === 'string' ? raw.phoneNumber : null));
+  const zoneCode = typeof raw.zone_code === 'string' ? raw.zone_code : (typeof raw.zoneCode === 'string' ? raw.zoneCode : null);
+
   return {
     id: row.id,
     firstName: row.firstName,
     lastName: row.lastName,
+    first_name: row.firstName,
+    last_name: row.lastName,
+    middle_name: typeof raw.middle_name === 'string' ? raw.middle_name : (typeof raw.middleName === 'string' ? raw.middleName : null),
     email: row.email,
-    avatar: row.avatarUrl ?? (typeof raw.avatar === 'string' ? raw.avatar : null),
+    username: typeof raw.username === 'string' ? raw.username : null,
+    alias: typeof raw.alias === 'string' ? raw.alias : null,
+    phone,
+    phoneNumber: phone,
+    phone_number: phone,
+    avatar,
+    avatarUrl: avatar,
+    profile_image_url: avatar,
     designation: typeof raw.designation === 'string' ? raw.designation : null,
-    zoneCode:
-      typeof raw.zone_code === 'string'
-        ? raw.zone_code
-        : typeof raw.zoneCode === 'string'
-          ? raw.zoneCode
-          : null,
+    administration: typeof raw.administration === 'string' ? raw.administration : null,
+    zoneCode,
+    zone_code: zoneCode,
     church: typeof raw.church === 'string' ? raw.church : null,
     region: typeof raw.region === 'string' ? raw.region : null,
+    gender: typeof raw.gender === 'string' ? raw.gender : null,
+    birthday: typeof raw.birthday === 'string' ? raw.birthday : null,
     role: row.role,
+    hasHqAccess: row.hasHqAccess,
+    has_hq_access: row.hasHqAccess,
+    canAnnotate: !!raw.canAnnotate,
+    hiddenFeatures: raw.hidden_features || raw.hiddenFeatures || {},
+    hidden_features: raw.hidden_features || raw.hiddenFeatures || {},
+    rawData: raw,
+    raw_data: raw,
+    createdAt: row.createdAt,
+    created_at: row.createdAt,
+    updatedAt: row.updatedAt,
+    updated_at: row.updatedAt,
   };
 }
 
@@ -122,9 +146,7 @@ router.get('/', requireAuth, async (req, res) => {
   res.status(400).json({ success: false, error: 'Provide kingschat_id, email, or ids query param' });
 });
 
-// GET /profiles/directory — lightweight contact list for chat pickers
-// Optional ?ids=id1,id2,id3 (comma-separated, max 50)
-// HQ admins see all profiles. Zone admins/members see profiles in their zone only.
+// GET /profiles/directory
 router.get('/directory', requireAuth, async (req, res) => {
   const parsedIds = directoryIdsQuerySchema.safeParse(
     typeof req.query.ids === 'string' ? req.query.ids : undefined,
@@ -137,24 +159,31 @@ router.get('/directory', requireAuth, async (req, res) => {
   const auth = res.locals.auth;
   const idList = parsedIds.data;
 
-  // If specific IDs are requested, just return those (used by chat participant lookups)
+  // If specific IDs are requested
   if (idList.length > 0) {
     const rows = await db.select().from(profiles).where(inArray(profiles.id, idList));
     res.json({ success: true, data: rows.map(directoryDto) });
     return;
   }
 
-  // HQ admins can see the full directory
-  const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+  const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || !!auth.hasHqAccess;
+  const requestedZoneCode = typeof req.query.zone_code === 'string' ? req.query.zone_code.trim() : null;
+
   if (isHqAdmin) {
+    if (requestedZoneCode && requestedZoneCode !== 'all') {
+      const rows = await db.select().from(profiles).where(
+        sql`(${profiles.rawData}->>'zone_code' = ${requestedZoneCode} OR ${profiles.rawData}->>'zoneCode' = ${requestedZoneCode})`
+      );
+      res.json({ success: true, data: rows.map(directoryDto) });
+      return;
+    }
     const rows = await db.select().from(profiles);
     res.json({ success: true, data: rows.map(directoryDto) });
     return;
   }
 
-  // Zone members and zone admins: scope to their zone via zone_code in rawData
-  // This gives members a contact list of people in their zone for chats
-  const callerZoneId = auth.zoneId as string | null;
+  // Scoped to zone
+  const callerZoneId = (requestedZoneCode && requestedZoneCode !== 'all') ? requestedZoneCode : (auth.zoneId as string | null);
   if (callerZoneId) {
     const rows = await db.select().from(profiles).where(
       sql`(${profiles.rawData}->>'zone_code' = ${callerZoneId} OR ${profiles.rawData}->>'zoneCode' = ${callerZoneId})`
@@ -163,9 +192,9 @@ router.get('/directory', requireAuth, async (req, res) => {
     return;
   }
 
-  // No zone on the token — return just themselves so they can still function
-  const [self] = await db.select().from(profiles).where(eq(profiles.id, auth.userId)).limit(1);
-  res.json({ success: true, data: self ? [directoryDto(self)] : [] });
+  // Fallback return all
+  const rows = await db.select().from(profiles);
+  res.json({ success: true, data: rows.map(directoryDto) });
 });
 
 // GET /profiles/:userId

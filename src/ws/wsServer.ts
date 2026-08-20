@@ -98,5 +98,18 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
     });
   });
 
+  // 25-second heartbeat to keep WebSocket tunnels active through Cloudflare and mobile proxies
+  const heartbeatInterval = setInterval(() => {
+    for (const [_, socket] of connections) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.ping();
+      }
+    }
+  }, 25000);
+
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
+
   return wss;
 }
