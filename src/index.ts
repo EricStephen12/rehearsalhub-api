@@ -101,6 +101,7 @@ app.use('/master', masterSongsRouter);
 app.use('/master-songs', masterSongsRouter);
 app.use('/ministered', masterSongsRouter);
 app.use('/ministered-songs', masterSongsRouter);
+app.use('/ministered_songs', masterSongsRouter);
 app.use('/favorites', favoritesRouter);
 app.use('/playlists', playlistsRouter);
 app.use('/attendance', attendanceRouter);

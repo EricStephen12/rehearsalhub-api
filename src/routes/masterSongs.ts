@@ -36,6 +36,9 @@ router.get('/', async (_req: Request, res: Response) => {
         leadKeyboardist: typeof m.leadKeyboardist === 'string' ? m.leadKeyboardist : null,
         customParts: m.customParts && typeof m.customParts === 'object' ? m.customParts : null,
         sourceType: typeof m.sourceType === 'string' ? m.sourceType : null,
+        isHqOnly: !!m.isHqOnly || !!m.is_hq_only || m.status === 'hidden' || m.status === 'hq_only',
+        isHistory: !!m.isHistory || !!m.is_history || m.status === 'history' || m.status === 'archived',
+        status: typeof m.status === 'string' ? m.status : (m.isHistory || m.is_history ? 'history' : (m.isHqOnly || m.is_hq_only ? 'hidden' : 'active')),
         publishedAt: m.publishedAt || null,
         updatedAt: m.updatedAt || null,
       };
