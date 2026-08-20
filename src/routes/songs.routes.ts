@@ -551,5 +551,52 @@ router.delete('/master/:id', requireAuth, async (req, res) => {
   }
 });
 
+// POST /songs/praise-night/:id/duplicate — Duplicate a song within or across programs
+router.post('/praise-night/:id/duplicate', requireAuth, async (req, res) => {
+  try {
+    const songId = req.params.id;
+    const { targetProgramId, targetPraiseNightId, zoneId } = req.body || {};
+
+    const [existing] = await db.select().from(songs).where(eq(songs.id, songId)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Song not found' });
+      return;
+    }
+
+    const newId = `song_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const prevRaw = (existing.rawData || {}) as Record<string, unknown>;
+    const targetProg = targetProgramId || targetPraiseNightId || existing.praiseNightId;
+
+    const duplicateRow = {
+      ...existing,
+      id: newId,
+      title: `${existing.title} (Copy)`,
+      praiseNightId: targetProg,
+      zoneId: zoneId || existing.zoneId,
+      status: 'unheard',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date(),
+      rawData: {
+        ...prevRaw,
+        id: newId,
+        title: `${existing.title} (Copy)`,
+        praiseNightId: targetProg,
+        status: 'unheard',
+        createdAt: new Date().toISOString(),
+      },
+    };
+
+    await db.insert(songs).values(duplicateRow);
+    res.status(201).json({
+      success: true,
+      message: 'Song duplicated successfully',
+      data: duplicateRow,
+    });
+  } catch (err) {
+    console.error('[songs/praise-night/:id/duplicate]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 export default router;
 

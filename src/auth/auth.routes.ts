@@ -24,8 +24,12 @@ const loginLimiter = rateLimit({
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.string().min(1).optional(),
+  username: z.string().min(1).optional(),
+  identifier: z.string().min(1).optional(),
   password: z.string().min(1),
+}).refine((data) => Boolean(data.email || data.username || data.identifier), {
+  message: 'Email or username is required',
 });
 
 const registerSchema = z.object({
@@ -94,7 +98,8 @@ router.post('/login', loginLimiter, async (req, res) => {
   }
 
   try {
-    const result = await login(parsed.data.email, parsed.data.password);
+    const userIdentifier = parsed.data.identifier || parsed.data.username || parsed.data.email!;
+    const result = await login(userIdentifier, parsed.data.password);
     res.json({ success: true, data: result });
   } catch (err) {
     if (err instanceof AuthError) {

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { eq, sql } from 'drizzle-orm';
+import { eq, or, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { db } from '../db';
 import { authCredentials, refreshTokens, profiles, zoneMembers, hqMembers } from '../schema';
@@ -171,11 +171,27 @@ export async function register(input: {
   return issueTokens(profile);
 }
 
-export async function login(email: string, password: string): Promise<AuthTokenResult> {
+export async function login(identifier: string, password: string): Promise<AuthTokenResult> {
+  const norm = (identifier || '').toLowerCase().trim();
+  if (!norm) {
+    throw new AuthError('Identifier and password required');
+  }
+
+  // Find profile by email, username, kingschatId, or name/alias
   const [profile] = await db
     .select()
     .from(profiles)
-    .where(emailEquals(email.toLowerCase().trim()))
+    .where(
+      or(
+        sql`lower(${profiles.email}) = ${norm}`,
+        sql`lower(${profiles.kingschatId}) = ${norm}`,
+        sql`lower(${profiles.rawData}->>'username') = ${norm}`,
+        sql`lower(${profiles.rawData}->>'alias') = ${norm}`,
+        sql`lower(${profiles.rawData}->>'kingschat_id') = ${norm}`,
+        sql`lower(${profiles.rawData}->>'kingschatId') = ${norm}`,
+        sql`lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')}`
+      )
+    )
     .limit(1);
 
   const [cred] = profile

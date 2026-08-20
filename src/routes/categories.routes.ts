@@ -211,29 +211,43 @@ router.delete('/page/:id', requireAuth, async (req, res) => {
 // POST /categories/page/order — Reorder page categories
 router.post('/page/order', requireAuth, async (req, res) => {
   try {
-    const { order } = req.body; // Array of { id, orderIndex } or sorted array of categories
-    if (!Array.isArray(order)) {
+    const rawOrder = Array.isArray(req.body) ? req.body : req.body?.order;
+    if (!Array.isArray(rawOrder)) {
       res.status(400).json({ success: false, error: 'Order array required' });
       return;
     }
 
-    for (let i = 0; i < order.length; i++) {
-      const item = order[i];
-      const itemId = typeof item === 'string' ? item : item.id;
+    const zoneId = req.body?.zoneId;
+
+    for (let i = 0; i < rawOrder.length; i++) {
+      const item = rawOrder[i];
+      const itemId = typeof item === 'string' ? item : (item.id || item.firebaseId || item._id);
       if (!itemId) continue;
 
-      const [pCat] = await db.select().from(pageCategories).where(sql`${pageCategories.id} = ${itemId}`).limit(1);
-      const [zpCat] = !pCat ? await db.select().from(zonePageCategories).where(sql`${zonePageCategories.id} = ${itemId}`).limit(1) : [null];
+      const [pCat] = await db.select().from(pageCategories).where(sql`${pageCategories.id} = ${String(itemId)}`).limit(1);
+      const [zpCat] = !pCat ? await db.select().from(zonePageCategories).where(sql`${zonePageCategories.id} = ${String(itemId)}`).limit(1) : [null];
       const existing = pCat || zpCat;
 
       if (existing) {
         const prevRaw = (existing.rawData || {}) as Record<string, unknown>;
-        const updatedRaw = { ...prevRaw, orderIndex: i };
+        const updatedRaw = { ...prevRaw, ...(typeof item === 'object' ? item : {}), orderIndex: i, order: i };
         if (pCat) {
-          await db.update(pageCategories).set({ rawData: updatedRaw }).where(sql`${pageCategories.id} = ${itemId}`);
+          await db.update(pageCategories).set({ rawData: updatedRaw }).where(sql`${pageCategories.id} = ${String(itemId)}`);
         } else {
-          await db.update(zonePageCategories).set({ rawData: updatedRaw }).where(sql`${zonePageCategories.id} = ${itemId}`);
+          await db.update(zonePageCategories).set({ rawData: updatedRaw }).where(sql`${zonePageCategories.id} = ${String(itemId)}`);
         }
+      } else if (typeof item === 'object') {
+        const row = {
+          id: String(itemId),
+          rawData: { ...item, orderIndex: i, order: i, ...(zoneId ? { zoneId } : {}) },
+        };
+        try {
+          if (zoneId && zoneId !== 'zone-001' && !zoneId.toLowerCase().includes('hq')) {
+            await db.insert(zonePageCategories).values(row);
+          } else {
+            await db.insert(pageCategories).values(row);
+          }
+        } catch {}
       }
     }
 
