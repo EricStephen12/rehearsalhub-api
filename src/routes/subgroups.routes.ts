@@ -139,22 +139,72 @@ router.get('/:id/praise-nights', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
   try {
-    const parsed = idSchema.safeParse(req.params.id);
-    if (!parsed.success) {
-      res.status(400).json({ success: false, error: 'Invalid id' });
-      return;
-    }
-    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
-    if (!row) {
-      res.status(404).json({ success: false, error: 'Not found' });
-      return;
-    }
-    res.json({ success: true, data: shapeSubgroup(row) });
+    const { zoneId } = req.query;
+    let query = db.select().from(subgroups);
+    const rows = zoneId && typeof zoneId === 'string'
+      ? await db.select().from(subgroups).where(
+          sql`${subgroups.zoneId} = ${zoneId} OR ${subgroups.rawData}->>'zoneId' = ${zoneId} OR ${subgroups.rawData}->>'zone_id' = ${zoneId}`
+        )
+      : await query;
+
+    res.json({ success: true, data: rows.map(shapeSubgroup) });
   } catch (err) {
-    console.error('[subgroups/:id]', err);
-    res.status(500).json({ success: false, error: 'Something went wrong' });
+    console.error('[subgroups/ GET]', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch subgroups' });
+  }
+});
+
+router.post('/:id/approve', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
+    if (!row) {
+      res.status(404).json({ success: false, error: 'Subgroup not found' });
+      return;
+    }
+
+    const raw = (row.rawData && typeof row.rawData === 'object' && !Array.isArray(row.rawData)
+      ? row.rawData
+      : {}) as Record<string, any>;
+    raw.status = 'active';
+
+    await db.update(subgroups).set({
+      rawData: raw,
+    }).where(eq(subgroups.id, id));
+
+    res.json({ success: true, message: 'Subgroup approved successfully' });
+  } catch (err: any) {
+    console.error('[subgroups/:id/approve]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to approve subgroup' });
+  }
+});
+
+router.post('/:id/reject', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
+    if (!row) {
+      res.status(404).json({ success: false, error: 'Subgroup not found' });
+      return;
+    }
+
+    const raw = (row.rawData && typeof row.rawData === 'object' && !Array.isArray(row.rawData)
+      ? row.rawData
+      : {}) as Record<string, any>;
+    raw.status = 'rejected';
+    raw.rejectReason = reason || 'Request rejected by admin';
+
+    await db.update(subgroups).set({
+      rawData: raw,
+    }).where(eq(subgroups.id, id));
+
+    res.json({ success: true, message: 'Subgroup rejected' });
+  } catch (err: any) {
+    console.error('[subgroups/:id/reject]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to reject subgroup' });
   }
 });
 

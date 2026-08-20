@@ -177,19 +177,22 @@ export async function login(identifier: string, password: string): Promise<AuthT
     throw new AuthError('Identifier and password required');
   }
 
-  // Find profile by email, username, kingschatId, or name/alias
+  // Find profile by email, username, email-prefix, kingschatId, or name/alias
   const [profile] = await db
     .select()
     .from(profiles)
     .where(
       or(
         sql`lower(${profiles.email}) = ${norm}`,
+        sql`lower(split_part(${profiles.email}, '@', 1)) = ${norm}`,
         sql`lower(${profiles.kingschatId}) = ${norm}`,
         sql`lower(${profiles.rawData}->>'username') = ${norm}`,
         sql`lower(${profiles.rawData}->>'alias') = ${norm}`,
         sql`lower(${profiles.rawData}->>'kingschat_id') = ${norm}`,
         sql`lower(${profiles.rawData}->>'kingschatId') = ${norm}`,
-        sql`lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')}`
+        sql`lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')}`,
+        sql`lower(coalesce(${profiles.firstName}, '')) = ${norm}`,
+        sql`lower(coalesce(${profiles.lastName}, '')) = ${norm}`
       )
     )
     .limit(1);

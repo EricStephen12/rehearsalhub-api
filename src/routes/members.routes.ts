@@ -330,4 +330,117 @@ router.post('/admin-requests/:id/reject', requireAuth, async (req, res) => {
   }
 });
 
+// PATCH /members/:userId — HQ Admin or member updates profile details & credentials
+router.patch('/:userId', requireAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const auth = res.locals.auth;
+    const isOwner = auth.userId === userId;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+
+    if (!isOwner && !isHqAdmin) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Member not found' });
+      return;
+    }
+
+    const body = req.body || {};
+    const raw = (existing.rawData && typeof existing.rawData === 'object' && !Array.isArray(existing.rawData)
+      ? existing.rawData
+      : {}) as Record<string, any>;
+
+    const firstName = body.first_name || body.firstName;
+    const lastName = body.last_name || body.lastName;
+    const phone = body.phone_number || body.phoneNumber;
+    const zoneCode = body.zone_code || body.zoneCode || body.zone_id || body.zoneId;
+    const kingschatId = body.kingschat_id || body.kingschatId;
+    const avatar = body.profile_image_url || body.avatar_url || body.avatar;
+    const hasHq = body.has_hq_access !== undefined ? body.has_hq_access : body.hasHqAccess;
+    const hiddenFeatures = body.hidden_features !== undefined ? body.hidden_features : body.hiddenFeatures;
+
+    if (firstName !== undefined) raw.first_name = firstName;
+    if (lastName !== undefined) raw.last_name = lastName;
+    if (phone !== undefined) raw.phone_number = phone;
+    if (zoneCode !== undefined) {
+      raw.zone_code = zoneCode;
+      raw.zoneCode = zoneCode;
+      raw.zoneId = zoneCode;
+    }
+    if (body.church !== undefined) raw.church = body.church;
+    if (kingschatId !== undefined) raw.kingschat_id = kingschatId;
+    if (body.designation !== undefined) raw.designation = body.designation;
+    if (avatar !== undefined) {
+      raw.profile_image_url = avatar;
+      raw.avatar = avatar;
+    }
+    if (body.username !== undefined) raw.username = body.username.trim().toLowerCase();
+    if (body.alias !== undefined) raw.alias = body.alias.trim().toLowerCase();
+    if (hiddenFeatures !== undefined) {
+      raw.hidden_features = hiddenFeatures;
+      raw.hiddenFeatures = hiddenFeatures;
+    }
+    if (isHqAdmin && body.role !== undefined) {
+      raw.role = body.role;
+    }
+    if (isHqAdmin && hasHq !== undefined) {
+      raw.hasHqAccess = hasHq;
+      raw.has_hq_access = hasHq;
+    }
+
+    // Handle password update
+    if (body.password) {
+      const { hashPassword } = await import('../auth/password');
+      const { authCredentials } = await import('../schema');
+      const hashedPassword = await hashPassword(body.password);
+      const [existingCred] = await db.select().from(authCredentials).where(eq(authCredentials.profileId, userId)).limit(1);
+
+      if (existingCred) {
+        await db.update(authCredentials)
+          .set({ passwordHash: hashedPassword, updatedAt: new Date() })
+          .where(eq(authCredentials.profileId, userId));
+      } else {
+        await db.insert(authCredentials).values({
+          profileId: userId,
+          passwordHash: hashedPassword,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    }
+
+    const updateFields: Record<string, any> = {
+      ...(firstName !== undefined ? { firstName } : {}),
+      ...(lastName !== undefined ? { lastName } : {}),
+      ...(kingschatId !== undefined ? { kingschatId } : {}),
+      ...(avatar !== undefined ? { avatarUrl: avatar } : {}),
+      ...(body.email !== undefined ? { email: body.email.trim().toLowerCase() } : {}),
+      rawData: raw,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (isHqAdmin && body.role !== undefined) {
+      updateFields.role = body.role;
+    }
+    if (isHqAdmin && hasHq !== undefined) {
+      updateFields.hasHqAccess = hasHq;
+    }
+
+    const [updated] = await db
+      .update(profiles)
+      .set(updateFields)
+      .where(eq(profiles.id, userId))
+      .returning();
+
+    res.json({ success: true, message: 'Member updated successfully', data: updated });
+  } catch (err: any) {
+    console.error('[members/:userId PATCH]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to update member' });
+  }
+});
+
 export default router;
