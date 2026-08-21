@@ -69,15 +69,12 @@ router.put('/:id', requireAuth, async (req, res) => {
         .update(settings)
         .set({
           rawData: mergedData,
-          updatedAt: new Date(),
         })
         .where(eq(settings.id, id));
     } else {
       await db.insert(settings).values({
         id,
         rawData: mergedData,
-        createdAt: new Date(),
-        updatedAt: new Date(),
       });
     }
 
@@ -115,15 +112,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
         .update(settings)
         .set({
           rawData: mergedData,
-          updatedAt: new Date(),
         })
         .where(eq(settings.id, id));
     } else {
       await db.insert(settings).values({
         id,
         rawData: mergedData,
-        createdAt: new Date(),
-        updatedAt: new Date(),
       });
     }
 
