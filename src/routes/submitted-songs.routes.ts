@@ -270,4 +270,43 @@ router.delete('/:id', requireAuth, async (req: any, res) => {
   }
 });
 
+/** POST /submitted-songs/:id/reply */
+router.post('/:id/reply', requireAuth, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { message, senderName } = req.body;
+    const auth = res.locals.auth;
+
+    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ success: false, error: 'Not found' });
+
+    const raw = (existing.rawData as Record<string, any>) || {};
+    const conversation = Array.isArray(raw.conversation) ? [...raw.conversation] : [];
+    
+    const isUserSender = existing.userId === auth.userId;
+    const newMessage = {
+      id: `msg-${Date.now()}`,
+      sender: isUserSender ? 'user' : 'admin',
+      senderName: senderName || auth.email || (isUserSender ? 'Singer' : 'Admin'),
+      message: message?.trim() || '',
+      timestamp: new Date().toISOString(),
+    };
+
+    conversation.push(newMessage);
+
+    const updatedRaw = {
+      ...raw,
+      conversation,
+      ...(isUserSender ? { userReply: message?.trim() } : { replyMessage: message?.trim() }),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    res.json({ success: true, message: 'Reply sent successfully', data: conversation });
+  } catch (err) {
+    console.error('[submitted-songs:reply]', err);
+    res.status(500).json({ success: false, error: 'Failed to post reply' });
+  }
+});
+
 export default router;

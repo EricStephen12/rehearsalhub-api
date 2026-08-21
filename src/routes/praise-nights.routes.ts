@@ -20,10 +20,8 @@ router.get('/', requireAuth, async (req, res) => {
 
     const HQ_GROUP_IDS = new Set([
       'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
-      'zone-orchestra', 'zone-president', 'zone-president-2', 'zone-director', 
-      'zone-oftp', 'zone-oftd', 'zone-national', 'zone-international',
-      'zone-boss', 'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
-      'zone-special-duty', 'special-duty-zone', 'zone-088', 'zone088', 'zone-086', 'zone086', 'zone-087', 'zone087', 'zone-090', 'zone090'
+      'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
+      'hq'
     ]);
 
     let rows: any[] = [];
@@ -37,11 +35,8 @@ router.get('/', requireAuth, async (req, res) => {
         HQ_GROUP_IDS.has(cleanZone) || 
         HQ_GROUP_IDS.has(withoutHyphen) ||
         HQ_GROUP_IDS.has(withHyphen) ||
-        cleanZone.includes('hq') || 
-        cleanZone.includes('president') || 
-        cleanZone.includes('director') || 
-        cleanZone.includes('orchestra') ||
-        cleanZone.includes('duty');
+        cleanZone === 'hq' || 
+        cleanZone === 'loveworld-singers-hq';
 
       if (isHqGroup || effectiveZoneId === 'all') {
         // HQ Big Zone: gets all HQ programs + specific HQ sub-group sessions (does not leak other external zones)
