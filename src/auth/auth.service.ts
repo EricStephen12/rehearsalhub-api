@@ -2,10 +2,21 @@ import crypto from 'crypto';
 import { eq, or, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { db } from '../db';
-import { authCredentials, refreshTokens, profiles, zoneMembers, hqMembers } from '../schema';
+import { authCredentials, refreshTokens, profiles, zoneMembers, hqMembers, notifications } from '../schema';
 import { signAccessToken, generateRefreshToken } from './token';
 import { verifyPassword, hashPassword, validatePasswordStrength } from './password';
 import { revocationStore } from './revocation';
+
+// HQ zone invitation codes — these require admin approval before login
+const HQ_ZONE_CODES = new Set([
+  'ZONE001', 'ZONE002', 'ZONE003', 'ZONE004', 'ZONE005',
+  'ZONEORCH', 'ZONEPRES', 'ZONEPRES2', 'ZONEDIR', 'ZONEOFTP',
+  'ZONEOFTD', 'ZONENAT', 'ZONEINT', 'ZONESA1'
+]);
+
+function isHQZoneCode(code: string): boolean {
+  return HQ_ZONE_CODES.has(code.toUpperCase().trim());
+}
 
 export class AuthError extends Error {
   constructor(
@@ -115,7 +126,7 @@ export async function register(input: {
   zoneCode: string;
   designation?: string;
   kingschatId?: string;
-}): Promise<AuthTokenResult> {
+}): Promise<AuthTokenResult | { pendingApproval: true; userId: string; zoneName?: string }> {
   if (!validatePasswordStrength(input.password)) {
     throw new AuthError('Password must be at least 8 characters', 400);
   }
@@ -133,6 +144,8 @@ export async function register(input: {
   const id = crypto.randomUUID();
   const passwordHash = await hashPassword(input.password);
   const now = new Date();
+  const cleanZoneCode = input.zoneCode.trim().toUpperCase();
+  const isHQRequest = isHQZoneCode(cleanZoneCode);
 
   const [profile] = await db
     .insert(profiles)
@@ -152,11 +165,19 @@ export async function register(input: {
         email,
         first_name: input.firstName.trim(),
         last_name: input.lastName.trim(),
-        zone_code: input.zoneCode.trim(),
+        zone_code: cleanZoneCode,
         designation: input.designation?.trim() || null,
         kingschat_id: input.kingschatId?.trim() || null,
         role: 'user',
         profile_completed: true,
+        // HQ approval state
+        ...(isHQRequest ? {
+          pending_hq_approval: true,
+          is_active: false,
+          hq_request_at: now.toISOString(),
+        } : {
+          is_active: true,
+        }),
       },
     })
     .returning();
@@ -167,6 +188,35 @@ export async function register(input: {
     createdAt: now,
     updatedAt: now,
   });
+
+  // If HQ zone: notify HQ admins and return pending state
+  if (isHQRequest) {
+    const fullName = `${input.firstName.trim()} ${input.lastName.trim()}`;
+    const notifId = crypto.randomUUID();
+    await db.insert(notifications).values({
+      id: notifId,
+      type: 'join_request',
+      title: `New HQ Join Request`,
+      message: `${fullName} (${email}) has requested to join an HQ group using zone code ${cleanZoneCode}. Please review and approve or reject their account.`,
+      category: 'join_request',
+      priority: 'high',
+      targetAudience: 'hq_admin',
+      senderId: id,
+      createdAt: now.toISOString(),
+      rawData: {
+        type: 'join_request',
+        applicantId: id,
+        applicantName: fullName,
+        applicantEmail: email,
+        zoneCode: cleanZoneCode,
+        designation: input.designation?.trim() || null,
+        requestedAt: now.toISOString(),
+        status: 'pending',
+      },
+    }).catch(() => {/* non-fatal */});
+
+    return { pendingApproval: true, userId: id };
+  }
 
   return issueTokens(profile);
 }
@@ -207,6 +257,12 @@ export async function login(identifier: string, password: string): Promise<AuthT
 
   if (!profile || !cred || !(await verifyPassword(password, cred.passwordHash))) {
     throw new AuthError('Invalid credentials');
+  }
+
+  // Block login for accounts pending HQ approval
+  const raw = asRaw(profile.rawData);
+  if (raw.pending_hq_approval === true) {
+    throw new AuthError('PENDING_APPROVAL', 403);
   }
 
   return issueTokens(profile);

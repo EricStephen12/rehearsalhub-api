@@ -60,12 +60,42 @@ router.get('/', requireAuth, async (req, res) => {
         const targetGroup =
           (raw.target_group as string | undefined) || (raw.targetGroup as string | undefined);
 
-        // Admins can see all broadcasts
-        let visible = isAdmin || audience === 'all';
-        if (!visible) {
-          if (audience === 'individual' && targetUser === userId) visible = true;
-          if (audience === 'group' && targetGroup && groupNames.has(targetGroup)) visible = true;
+        const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+        const isZoneAdmin = auth.role === 'zone_admin' || isHqAdmin;
+        const userZone = auth.zoneId as string | undefined;
+
+        // Strict visibility resolution
+        let visible = false;
+
+        // 1. Direct 1-on-1 personal notification
+        if (targetUser) {
+          if (targetUser === userId) {
+            visible = true;
+          } else if (req.query.admin === 'true' && isHqAdmin) {
+            // HQ Admin inspecting admin dispatch log
+            visible = true;
+          }
+        } else if (audience === 'hq_admin') {
+          // 2. HQ Admin exclusive notification (e.g. join requests)
+          visible = isHqAdmin;
+        } else if (audience === 'zone_admin') {
+          // 3. Zonal Admin notification
+          visible = isZoneAdmin;
+        } else if (audience === 'group' && targetGroup) {
+          // 4. Subgroup notification
+          visible = groupNames.has(targetGroup) || isHqAdmin;
+        } else if (audience === 'all' || audience === 'broadcast') {
+          // 5. Broadcast to all members (respecting zoneId if specified)
+          const notifZone = row.zoneId || (raw.zoneId as string) || (raw.zone_id as string);
+          if (!notifZone || notifZone === 'all' || notifZone === 'global' || isHqAdmin) {
+            visible = true;
+          } else if (userZone && userZone === notifZone) {
+            visible = true;
+          }
+        } else if (isAdmin) {
+          visible = true;
         }
+
         if (!visible) return null;
 
         const title = row.title || (raw.title as string) || (merged.title as string) || 'Broadcast Notification';

@@ -663,3 +663,48 @@ export const zoneCategories = pgTable('zone_categories', {
   id: text('id').primaryKey(),
   rawData: jsonb('raw_data'),
 });
+
+// ============================================================================
+// 10. DEDICATED SUPPORT SYSTEM
+// ============================================================================
+
+/**
+ * SUPPORT TICKETS
+ * Dedicated support requests and tickets (separate from regular user chats).
+ */
+export const supportTickets = pgTable('support_tickets', {
+  id: text('id').primaryKey(),
+  userId: text('user_id'),
+  userName: text('user_name'),
+  userEmail: text('user_email'),
+  subject: text('subject'),
+  category: text('category').default('general'),
+  status: text('status').default('open'),
+  priority: text('priority').default('normal'),
+  zoneId: text('zone_id'),
+  lastMessage: text('last_message'),
+  lastTimestamp: timestamp('last_timestamp').defaultNow(),
+  unreadByAdmin: integer('unread_by_admin').default(0),
+  unreadByUser: integer('unread_by_user').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+  rawData: jsonb('raw_data'),
+});
+
+export const support = supportTickets;
+
+/**
+ * SUPPORT MESSAGES
+ * Conversation messages inside a support ticket.
+ */
+export const supportMessages = pgTable('support_messages', {
+  id: text('id').primaryKey(),
+  ticketId: text('ticket_id').notNull(),
+  senderId: text('sender_id').notNull(),
+  senderName: text('sender_name'),
+  senderType: text('sender_type').default('user'),
+  message: text('message').notNull(),
+  attachments: jsonb('attachments'),
+  createdAt: timestamp('created_at').defaultNow(),
+  rawData: jsonb('raw_data'),
+});

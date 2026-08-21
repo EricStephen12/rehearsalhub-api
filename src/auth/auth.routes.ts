@@ -78,6 +78,18 @@ router.post('/register', loginLimiter, async (req, res) => {
       designation: parsed.data.designation,
       kingschatId: parsed.data.kingschat_id,
     });
+
+    // HQ zone registration — account awaiting admin approval
+    if ('pendingApproval' in result && result.pendingApproval) {
+      res.status(202).json({
+        success: true,
+        pendingApproval: true,
+        userId: result.userId,
+        message: 'Your application to join an HQ group has been submitted. You will be notified once an admin approves your account.',
+      });
+      return;
+    }
+
     res.status(201).json({ success: true, data: result });
   } catch (err) {
     if (err instanceof AuthError) {
@@ -103,6 +115,11 @@ router.post('/login', loginLimiter, async (req, res) => {
     res.json({ success: true, data: result });
   } catch (err) {
     if (err instanceof AuthError) {
+      // Special: HQ join request pending admin approval
+      if (err.message === 'PENDING_APPROVAL') {
+        res.status(403).json({ success: false, code: 'PENDING_APPROVAL', error: 'Your account is awaiting HQ admin approval. You will be notified when approved.' });
+        return;
+      }
       res.status(err.statusCode).json({ success: false, error: 'Invalid credentials' });
       return;
     }
