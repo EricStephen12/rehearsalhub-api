@@ -29,6 +29,7 @@ import audioRouter from './routes/audio.routes';
 import kingspayRouter from './routes/kingspay.routes';
 import lexiconRouter from './routes/lexicon.routes';
 import mediaRouter from './routes/media.routes';
+import { upcomingEventsRouter } from './routes/upcomingEvents.routes';
 import { writesRouter } from './routes/writes.routes';
 import { createWsServer } from './ws/wsServer';
 
@@ -114,6 +115,9 @@ app.use('/kingspay', kingspayRouter);
 app.use('/lexicon', lexiconRouter);
 app.use('/media', mediaRouter);
 app.use('/media-videos', mediaRouter);
+app.use('/upcoming-events', upcomingEventsRouter);
+app.use('/events', upcomingEventsRouter);
+app.use('/calendar-events', upcomingEventsRouter);
 
 // Write endpoints — require JWT
 app.use('/', writesRouter);

@@ -598,5 +598,161 @@ router.post('/praise-night/:id/duplicate', requireAuth, async (req, res) => {
   }
 });
 
+// GET /songs/:id/lyrics — Get lyrics and synced LRC for a song
+router.get('/:id/lyrics', requireAuth, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    let [song] = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    if (!song) {
+      const [mSong] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, id)).limit(1);
+      if (mSong) song = mSong as any;
+    }
+    if (!song) {
+      const [zSong] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, id)).limit(1);
+      if (zSong) song = zSong as any;
+    }
+
+    if (!song) {
+      res.status(404).json({ success: false, error: 'Song not found' });
+      return;
+    }
+
+    const merged = mergeRawRow(song);
+    const rawData = (song.rawData as Record<string, any>) || {};
+
+    const karaokeLrcText = rawData.karaokeLrcText || merged.karaokeLrcText || null;
+    const syncedLyrics = rawData.syncedLyrics || merged.syncedLyrics || null;
+    const lyrics = rawData.lyrics || song.lyrics || merged.lyrics || null;
+
+    res.json({
+      success: true,
+      data: {
+        id,
+        karaokeLrcText,
+        syncedLyrics,
+        lyricsText: lyrics,
+        hasSyncedLyrics: Boolean(rawData.hasSyncedLyrics || karaokeLrcText || (syncedLyrics && syncedLyrics.length > 0)),
+      },
+    });
+  } catch (err) {
+    console.error('[songs/:id/lyrics:GET]', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch lyrics' });
+  }
+});
+
+// PATCH /songs/:id/lyrics — Save synced LRC or plain lyrics for a song
+router.patch('/:id/lyrics', requireAuth, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { karaokeLrcText, syncedLyrics, lyrics } = req.body || {};
+    const now = new Date().toISOString();
+
+    let updated = false;
+
+    // 1. Try songs table
+    const [song] = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    if (song) {
+      const rawData = (song.rawData as Record<string, any>) || {};
+      const updatedRaw = {
+        ...rawData,
+        ...(karaokeLrcText !== undefined ? { karaokeLrcText } : {}),
+        ...(syncedLyrics !== undefined ? { syncedLyrics } : {}),
+        ...(lyrics !== undefined ? { lyrics } : {}),
+        hasSyncedLyrics: Boolean(karaokeLrcText || (syncedLyrics && syncedLyrics.length > 0)),
+        lyricsUpdatedAt: now,
+      };
+
+      const setFields: any = { rawData: updatedRaw };
+      if (lyrics !== undefined) setFields.lyrics = lyrics;
+
+      await db.update(songs).set(setFields).where(eq(songs.id, id));
+      updated = true;
+    }
+
+    // 2. Try ministeredSongs table
+    const [mSong] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, id)).limit(1);
+    if (mSong) {
+      const rawData = (mSong.rawData as Record<string, any>) || {};
+      const updatedRaw = {
+        ...rawData,
+        ...(karaokeLrcText !== undefined ? { karaokeLrcText } : {}),
+        ...(syncedLyrics !== undefined ? { syncedLyrics } : {}),
+        ...(lyrics !== undefined ? { lyrics } : {}),
+        hasSyncedLyrics: Boolean(karaokeLrcText || (syncedLyrics && syncedLyrics.length > 0)),
+        lyricsUpdatedAt: now,
+      };
+
+      const setFields: any = { rawData: updatedRaw };
+      if (lyrics !== undefined) setFields.lyrics = lyrics;
+
+      await db.update(ministeredSongs).set(setFields).where(eq(ministeredSongs.id, id));
+      updated = true;
+    }
+
+    // 3. Try zoneSongs table
+    const [zSong] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, id)).limit(1);
+    if (zSong) {
+      const rawData = (zSong.rawData as Record<string, any>) || {};
+      const updatedRaw = {
+        ...rawData,
+        ...(karaokeLrcText !== undefined ? { karaokeLrcText } : {}),
+        ...(syncedLyrics !== undefined ? { syncedLyrics } : {}),
+        ...(lyrics !== undefined ? { lyrics } : {}),
+        hasSyncedLyrics: Boolean(karaokeLrcText || (syncedLyrics && syncedLyrics.length > 0)),
+        lyricsUpdatedAt: now,
+      };
+
+      await db.update(zoneSongs).set({ rawData: updatedRaw }).where(eq(zoneSongs.id, id));
+      updated = true;
+    }
+
+    if (!updated) {
+      res.status(404).json({ success: false, error: 'Song not found' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      message: 'Lyrics saved successfully',
+      data: { id, karaokeLrcText, syncedLyrics, lyrics },
+    });
+  } catch (err) {
+    console.error('[songs/:id/lyrics:PATCH]', err);
+    res.status(500).json({ success: false, error: 'Failed to save lyrics' });
+  }
+});
+
+// GET /songs/:id — Single song lookup across all song tables
+router.get('/:id', requireAuth, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    const [song] = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    if (song) {
+      res.json({ success: true, data: mergeRawRow(song) });
+      return;
+    }
+
+    const [mSong] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, id)).limit(1);
+    if (mSong) {
+      res.json({ success: true, data: mergeRawRow(mSong) });
+      return;
+    }
+
+    const [zSong] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, id)).limit(1);
+    if (zSong) {
+      res.json({ success: true, data: mergeRawRow(zSong) });
+      return;
+    }
+
+    res.status(404).json({ success: false, error: 'Song not found' });
+  } catch (err) {
+    console.error('[songs/:id:GET]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 export default router;
+
 
