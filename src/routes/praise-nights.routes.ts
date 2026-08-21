@@ -22,42 +22,51 @@ router.get('/', requireAuth, async (req, res) => {
       'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
       'zone-orchestra', 'zone-president', 'zone-president-2', 'zone-director', 
       'zone-oftp', 'zone-oftd', 'zone-national', 'zone-international',
-      'zone-sa-1', 'zone-boss', 'loveworld-singers-hq', 'zone001', 'zone-special-duty',
-      'zone-088', 'zone088', 'special-duty-zone', 'zone-086', 'zone-087', 'zone-090'
+      'zone-boss', 'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
+      'zone-special-duty', 'special-duty-zone', 'zone-088', 'zone088', 'zone-086', 'zone086', 'zone-087', 'zone087', 'zone-090', 'zone090'
     ]);
 
     let rows: any[] = [];
 
     if (effectiveZoneId) {
-      const cleanZone = effectiveZoneId.toLowerCase();
-      const isHqGroupOrAll = HQ_GROUP_IDS.has(cleanZone) || cleanZone.includes('hq') || cleanZone.includes('president') || cleanZone.includes('director') || cleanZone.includes('sa-1') || cleanZone.includes('duty') || cleanZone === 'all';
+      const cleanZone = effectiveZoneId.toLowerCase().trim();
+      const withoutHyphen = cleanZone.replace(/-/g, '');
+      const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
 
-      if (isHqGroupOrAll) {
-        const [allGlobal, zRows] = await Promise.all([
+      const isHqGroup = 
+        HQ_GROUP_IDS.has(cleanZone) || 
+        HQ_GROUP_IDS.has(withoutHyphen) ||
+        HQ_GROUP_IDS.has(withHyphen) ||
+        cleanZone.includes('hq') || 
+        cleanZone.includes('president') || 
+        cleanZone.includes('director') || 
+        cleanZone.includes('orchestra') ||
+        cleanZone.includes('duty');
+
+      if (isHqGroup || effectiveZoneId === 'all') {
+        // HQ Big Zone: gets all HQ programs + specific HQ sub-group sessions (does not leak other external zones)
+        const [hqProgs, zRows] = await Promise.all([
           db.select().from(programs),
-          db.select().from(zonePrograms).where(sql`lower(${zonePrograms.zoneId}) = ${cleanZone}`),
+          db.select().from(zonePrograms).where(
+            sql`lower(replace(${zonePrograms.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${zonePrograms.zoneId}) = ${withHyphen} OR lower(replace(${zonePrograms.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${zonePrograms.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
+          ),
         ]);
         const mergedZ = zRows.map(mergeRawRow);
-        const mergedGlobal = allGlobal.map(mergeRawRow);
-        rows = [...mergedZ, ...mergedGlobal];
+        const mergedHq = hqProgs.map(mergeRawRow);
+        rows = [...mergedZ, ...mergedHq];
       } else {
-        const [zRows, zoneSpecificRows, sharedGlobalRows] = await Promise.all([
+        // External Zone (e.g. zone-sa-1, zone-017, zone-052): gets ONLY their own zone's programs
+        const [zRows, zoneSpecificRows] = await Promise.all([
           db.select().from(zonePrograms).where(
-            sql`lower(${zonePrograms.zoneId}) = ${cleanZone} OR lower(${zonePrograms.rawData}->>'zone_code') = ${cleanZone} OR lower(${zonePrograms.rawData}->>'zoneId') = ${cleanZone}`
+            sql`lower(replace(${zonePrograms.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${zonePrograms.zoneId}) = ${withHyphen} OR lower(replace(${zonePrograms.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${zonePrograms.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
           ),
           db.select().from(programs).where(
-            sql`lower(${programs.zoneId}) = ${cleanZone} OR lower(${programs.rawData}->>'zone_code') = ${cleanZone} OR lower(${programs.rawData}->>'zoneId') = ${cleanZone}`
-          ),
-          db.select().from(programs).where(
-            sql`${programs.zoneId} IS NULL OR ${programs.zoneId} = 'zone-001'`
+            sql`lower(replace(${programs.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${programs.zoneId}) = ${withHyphen} OR lower(replace(${programs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${programs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
           ),
         ]);
         const mergedZ = zRows.map(mergeRawRow);
         const mergedZoneSpecific = zoneSpecificRows.map(mergeRawRow);
-        const mergedGlobal = sharedGlobalRows.map(mergeRawRow);
-        
-        // Zonal specific programs come first, then shared global programs (no other zone leaks)
-        rows = [...mergedZ, ...mergedZoneSpecific, ...mergedGlobal];
+        rows = [...mergedZ, ...mergedZoneSpecific];
       }
     } else {
       const allGlobal = await db.select().from(programs);

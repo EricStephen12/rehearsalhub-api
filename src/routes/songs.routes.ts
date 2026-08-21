@@ -67,9 +67,16 @@ const getSongsHandler = async (req: any, res: any) => {
       );
     } else if (zoneId) {
       const cleanZone = (zoneId as string).toLowerCase();
+      const withoutHyphen = cleanZone.replace(/-/g, '');
+      const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
+
       const [mainRows, zRows] = await Promise.all([
-        db.select().from(songs).where(sql`lower(${songs.zoneId}) = ${cleanZone}`),
-        db.select().from(zoneSongs).where(sql`lower(${zoneSongs.zoneId}) = ${cleanZone}`),
+        db.select().from(songs).where(
+          sql`lower(replace(${songs.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${songs.zoneId}) = ${withHyphen} OR lower(replace(${songs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${songs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
+        ),
+        db.select().from(zoneSongs).where(
+          sql`lower(replace(${zoneSongs.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${zoneSongs.zoneId}) = ${withHyphen} OR lower(replace(${zoneSongs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${zoneSongs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
+        ),
       ]);
       rows = [...mainRows, ...zRows.map(mergeRawRow)].sort((a, b) =>
         String(a.title || '').localeCompare(String(b.title || ''))
