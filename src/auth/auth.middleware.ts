@@ -20,10 +20,12 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
       return;
     }
 
+    const activeZoneHeader = (req.headers['x-zone-id'] as string) || (req.headers['x-zone-code'] as string) || (req.query.zoneId as string) || (req.query.zone_code as string);
+
     res.locals.auth = {
       userId: payload.sub,
       role: payload.role,
-      zoneId: payload.zoneId,
+      zoneId: activeZoneHeader || payload.zoneId,
       jti: payload.jti,
       exp: payload.exp!,
     };
