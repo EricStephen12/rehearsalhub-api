@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { profiles, authCredentials, notifications } from '../schema';
+import { profiles, authCredentials, notifications, zoneMembers, hqMembers } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { hashPassword } from '../auth/password';
 import { broadcast } from '../ws/wsServer';
@@ -169,27 +169,36 @@ router.get('/directory', requireAuth, async (req, res) => {
 
   const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || !!auth.hasHqAccess;
   const requestedZoneCode = typeof req.query.zone_code === 'string' ? req.query.zone_code.trim() : null;
+  const targetZone = (requestedZoneCode && requestedZoneCode !== 'all') ? requestedZoneCode : (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
-  if (isHqAdmin) {
-    if (requestedZoneCode && requestedZoneCode !== 'all') {
-      const rows = await db.select().from(profiles).where(
-        sql`(${profiles.rawData}->>'zone_code' = ${requestedZoneCode} OR ${profiles.rawData}->>'zoneCode' = ${requestedZoneCode})`
-      );
-      res.json({ success: true, data: rows.map(directoryDto) });
+  if (targetZone) {
+    const [directProfiles, zmRows, hmRows] = await Promise.all([
+      db.select().from(profiles).where(
+        sql`(
+          lower(${profiles.rawData}->>'zone_code') = ${targetZone.toLowerCase()} OR 
+          lower(${profiles.rawData}->>'zoneCode') = ${targetZone.toLowerCase()} OR 
+          lower(${profiles.rawData}->>'zoneId') = ${targetZone.toLowerCase()} OR 
+          lower(${profiles.rawData}->>'zone_id') = ${targetZone.toLowerCase()}
+        )`
+      ),
+      db.select().from(zoneMembers).where(sql`lower(${zoneMembers.zoneId}) = ${targetZone.toLowerCase()}`),
+      db.select().from(hqMembers).where(sql`lower(${hqMembers.hqGroupId}) = ${targetZone.toLowerCase()}`),
+    ]);
+
+    const targetUserIds = new Set<string>([
+      ...directProfiles.map(p => p.id),
+      ...zmRows.map(z => z.userId).filter(Boolean),
+      ...hmRows.map(h => h.userId).filter(Boolean),
+    ]);
+
+    if (targetUserIds.size === 0) {
+      res.json({ success: true, data: [] });
       return;
     }
-    const rows = await db.select().from(profiles);
-    res.json({ success: true, data: rows.map(directoryDto) });
-    return;
-  }
 
-  // Scoped to zone
-  const callerZoneId = (requestedZoneCode && requestedZoneCode !== 'all') ? requestedZoneCode : (auth.zoneId as string | null);
-  if (callerZoneId) {
-    const rows = await db.select().from(profiles).where(
-      sql`(${profiles.rawData}->>'zone_code' = ${callerZoneId} OR ${profiles.rawData}->>'zoneCode' = ${callerZoneId})`
-    );
-    res.json({ success: true, data: rows.map(directoryDto) });
+    const uniqueIds = Array.from(targetUserIds);
+    const allMatchingProfiles = await db.select().from(profiles).where(inArray(profiles.id, uniqueIds));
+    res.json({ success: true, data: allMatchingProfiles.map(directoryDto) });
     return;
   }
 

@@ -55,13 +55,21 @@ const getSongsHandler = async (req: any, res: any) => {
 
     let rows: any[] = [];
     if (targetProgramId) {
-      rows = await db.select().from(songs)
-        .where(eq(songs.praiseNightId, targetProgramId))
-        .orderBy(asc(songs.title));
-    } else if (zoneId) {
       const [mainRows, zRows] = await Promise.all([
-        db.select().from(songs).where(eq(songs.zoneId, zoneId as string)),
-        db.select().from(zoneSongs).where(eq(zoneSongs.zoneId, zoneId as string)),
+        db.select().from(songs).where(eq(songs.praiseNightId, targetProgramId)),
+        db.select().from(zoneSongs).where(
+          sql`${zoneSongs.rawData}->>'praiseNightId' = ${targetProgramId} OR ${zoneSongs.rawData}->>'programId' = ${targetProgramId} OR lower(${zoneSongs.rawData}->>'praise_night_id') = ${targetProgramId.toLowerCase()}`
+        ),
+      ]);
+      const mergedZ = zRows.map(mergeRawRow);
+      rows = [...mainRows, ...mergedZ].sort((a, b) =>
+        String(a.title || '').localeCompare(String(b.title || ''))
+      );
+    } else if (zoneId) {
+      const cleanZone = (zoneId as string).toLowerCase();
+      const [mainRows, zRows] = await Promise.all([
+        db.select().from(songs).where(sql`lower(${songs.zoneId}) = ${cleanZone}`),
+        db.select().from(zoneSongs).where(sql`lower(${zoneSongs.zoneId}) = ${cleanZone}`),
       ]);
       rows = [...mainRows, ...zRows.map(mergeRawRow)].sort((a, b) =>
         String(a.title || '').localeCompare(String(b.title || ''))

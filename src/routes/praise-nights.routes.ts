@@ -18,19 +18,50 @@ router.get('/', requireAuth, async (req, res) => {
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
     const effectiveZoneId = queryZoneId || (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
+    const HQ_GROUP_IDS = new Set([
+      'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
+      'zone-orchestra', 'zone-president', 'zone-president-2', 'zone-director', 
+      'zone-oftp', 'zone-oftd', 'zone-national', 'zone-international',
+      'zone-sa-1', 'zone-boss', 'loveworld-singers-hq', 'zone001', 'zone-special-duty',
+      'zone-088', 'zone088', 'special-duty-zone', 'zone-086', 'zone-087', 'zone-090'
+    ]);
+
     let rows: any[] = [];
 
-    if (effectiveZoneId && effectiveZoneId !== 'zone-001' && !effectiveZoneId.toLowerCase().includes('hq') && effectiveZoneId !== 'ZONE001') {
-      const [zRows, globalRows] = await Promise.all([
-        db.select().from(zonePrograms),
-        db.select().from(programs).where(eq(programs.zoneId, effectiveZoneId)),
-      ]);
-      const mergedZ = zRows.map(mergeRawRow).filter((r: any) => !r.zoneId || r.zoneId === effectiveZoneId || r.zone_id === effectiveZoneId);
-      const mergedGlobal = globalRows.map(mergeRawRow);
-      rows = [...mergedZ, ...mergedGlobal];
-      if (rows.length === 0) {
-        const allGlobal = await db.select().from(programs);
-        rows = allGlobal.map(mergeRawRow);
+    if (effectiveZoneId) {
+      const cleanZone = effectiveZoneId.toLowerCase();
+      const isHqGroupOrAll = HQ_GROUP_IDS.has(cleanZone) || cleanZone.includes('hq') || cleanZone.includes('president') || cleanZone.includes('director') || cleanZone.includes('sa-1') || cleanZone.includes('duty') || cleanZone === 'all';
+
+      if (isHqGroupOrAll) {
+        const [allGlobal, zRows] = await Promise.all([
+          db.select().from(programs),
+          db.select().from(zonePrograms).where(sql`lower(${zonePrograms.zoneId}) = ${cleanZone}`),
+        ]);
+        const mergedZ = zRows.map(mergeRawRow);
+        const mergedGlobal = allGlobal.map(mergeRawRow);
+        rows = [...mergedZ, ...mergedGlobal];
+      } else {
+        const [zRows, zoneSpecificRows, sharedGlobalRows] = await Promise.all([
+          db.select().from(zonePrograms),
+          db.select().from(programs).where(
+            sql`lower(${programs.zoneId}) = ${cleanZone} OR lower(${programs.rawData}->>'zone_code') = ${cleanZone} OR lower(${programs.rawData}->>'zoneId') = ${cleanZone}`
+          ),
+          db.select().from(programs).where(
+            sql`${programs.zoneId} IS NULL OR ${programs.zoneId} = 'zone-001'`
+          ),
+        ]);
+        const mergedZ = zRows.map(mergeRawRow).filter((r: any) => {
+          const rz = (r.zoneId || r.zone_id || '').toLowerCase();
+          return rz === cleanZone;
+        });
+        const mergedZoneSpecific = zoneSpecificRows.map(mergeRawRow);
+        
+        if (mergedZ.length > 0 || mergedZoneSpecific.length > 0) {
+          rows = [...mergedZ, ...mergedZoneSpecific];
+        } else {
+          // Fallback to shared global programs, avoiding dumping other private zones
+          rows = sharedGlobalRows.map(mergeRawRow);
+        }
       }
     } else {
       const allGlobal = await db.select().from(programs);
