@@ -46,17 +46,19 @@ router.get('/', requireAuth, async (req, res) => {
     const data = notifRows
       .map((row) => {
         const merged = mergeRawRow(row);
+        const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, unknown>) : {};
+
         const audience =
           (row.targetAudience as string | undefined) ||
-          (merged.target_audience as string | undefined) ||
-          (merged.targetAudience as string | undefined) ||
+          (raw.target_audience as string | undefined) ||
+          (raw.targetAudience as string | undefined) ||
           'all';
         const targetUser =
           row.targetUserId ||
-          (merged.target_user_id as string | undefined) ||
-          (merged.targetUserId as string | undefined);
+          (raw.target_user_id as string | undefined) ||
+          (raw.targetUserId as string | undefined);
         const targetGroup =
-          (merged.target_group as string | undefined) || (merged.targetGroup as string | undefined);
+          (raw.target_group as string | undefined) || (raw.targetGroup as string | undefined);
 
         // Admins can see all broadcasts
         let visible = isAdmin || audience === 'all';
@@ -66,14 +68,14 @@ router.get('/', requireAuth, async (req, res) => {
         }
         if (!visible) return null;
 
-        const title = row.title ?? (merged.title as string | undefined) ?? 'Broadcast Notification';
-        const message = row.message ?? (merged.message as string | undefined) ?? (merged.body as string | undefined) ?? '';
-        const body = (merged.body as string | undefined) || message;
-        const category = row.category || merged.category || 'general';
-        const priority = row.priority || merged.priority || 'normal';
-        const senderName = (merged.sender_name as string) || (merged.senderName as string) || (merged.sentBy as string) || 'HQ Administrator';
-        const sentBy = (merged.sender_name as string) || (merged.senderName as string) || senderName;
-        const createdAt = row.createdAt ?? (merged.createdAt as string | undefined) ?? (merged.created_at as string | undefined) ?? new Date().toISOString();
+        const title = row.title || (raw.title as string) || (merged.title as string) || 'Broadcast Notification';
+        const message = row.message || (raw.message as string) || (raw.body as string) || (raw.text as string) || (merged.message as string) || (merged.body as string) || '';
+        const body = (raw.body as string) || message;
+        const category = row.category || (raw.category as string) || (merged.category as string) || 'general';
+        const priority = row.priority || (raw.priority as string) || (merged.priority as string) || 'normal';
+        const senderName = (raw.sender_name as string) || (raw.senderName as string) || (raw.sentBy as string) || (merged.sender_name as string) || (merged.senderName as string) || 'HQ Administrator';
+        const sentBy = senderName;
+        const createdAt = row.createdAt || (raw.created_at as string) || (raw.createdAt as string) || (merged.created_at as string) || new Date().toISOString();
 
         return {
           ...merged,
@@ -111,7 +113,29 @@ router.get('/:id', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Notification not found' });
       return;
     }
-    res.json({ success: true, data: mergeRawRow(row) });
+    const merged = mergeRawRow(row);
+    const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, unknown>) : {};
+    const title = row.title || (raw.title as string) || (merged.title as string) || 'Broadcast Notification';
+    const message = row.message || (raw.message as string) || (raw.body as string) || (raw.text as string) || (merged.message as string) || '';
+    const body = (raw.body as string) || message;
+    const category = row.category || (raw.category as string) || 'general';
+    const priority = row.priority || (raw.priority as string) || 'normal';
+    const senderName = (raw.sender_name as string) || (raw.senderName as string) || (raw.sentBy as string) || 'HQ Administrator';
+
+    res.json({
+      success: true,
+      data: {
+        ...merged,
+        id: row.id,
+        title,
+        message,
+        body,
+        category,
+        priority,
+        senderName,
+        sentBy: senderName,
+      },
+    });
   } catch (err) {
     console.error('[notifications/:id GET]', err);
     res.status(500).json({ success: false, error: 'Failed to fetch notification' });
