@@ -42,7 +42,9 @@ router.get('/', requireAuth, async (req, res) => {
         rows = [...mergedZ, ...mergedGlobal];
       } else {
         const [zRows, zoneSpecificRows, sharedGlobalRows] = await Promise.all([
-          db.select().from(zonePrograms),
+          db.select().from(zonePrograms).where(
+            sql`lower(${zonePrograms.zoneId}) = ${cleanZone} OR lower(${zonePrograms.rawData}->>'zone_code') = ${cleanZone} OR lower(${zonePrograms.rawData}->>'zoneId') = ${cleanZone}`
+          ),
           db.select().from(programs).where(
             sql`lower(${programs.zoneId}) = ${cleanZone} OR lower(${programs.rawData}->>'zone_code') = ${cleanZone} OR lower(${programs.rawData}->>'zoneId') = ${cleanZone}`
           ),
@@ -50,36 +52,44 @@ router.get('/', requireAuth, async (req, res) => {
             sql`${programs.zoneId} IS NULL OR ${programs.zoneId} = 'zone-001'`
           ),
         ]);
-        const mergedZ = zRows.map(mergeRawRow).filter((r: any) => {
-          const rz = (r.zoneId || r.zone_id || '').toLowerCase();
-          return rz === cleanZone;
-        });
+        const mergedZ = zRows.map(mergeRawRow);
         const mergedZoneSpecific = zoneSpecificRows.map(mergeRawRow);
+        const mergedGlobal = sharedGlobalRows.map(mergeRawRow);
         
-        if (mergedZ.length > 0 || mergedZoneSpecific.length > 0) {
-          rows = [...mergedZ, ...mergedZoneSpecific];
-        } else {
-          // Fallback to shared global programs, avoiding dumping other private zones
-          rows = sharedGlobalRows.map(mergeRawRow);
-        }
+        // Zonal specific programs come first, then shared global programs (no other zone leaks)
+        rows = [...mergedZ, ...mergedZoneSpecific, ...mergedGlobal];
       }
     } else {
       const allGlobal = await db.select().from(programs);
       rows = allGlobal.map(mergeRawRow);
     }
 
+function getProgramTimestamp(p: any): number {
+  const raw = (p.rawData && typeof p.rawData === 'object' ? p.rawData : {}) as any;
+  if (raw?.createdAt?._seconds) return Number(raw.createdAt._seconds) * 1000;
+  if (raw?.createdAt?.seconds) return Number(raw.createdAt.seconds) * 1000;
+  if (p.createdAt) {
+    const t = new Date(p.createdAt).getTime();
+    if (!isNaN(t) && t > 0) return t;
+  }
+  if (p.date) {
+    const t = new Date(p.date).getTime();
+    if (!isNaN(t) && t > 0) return t;
+  }
+  return 0;
+}
+
     let data = rows.sort((a, b) => {
-      const ac = String(a.createdAt ?? a.date ?? '');
-      const bc = String(b.createdAt ?? b.date ?? '');
-      return bc.localeCompare(ac);
+      if (a.category === 'ongoing' && b.category !== 'ongoing') return -1;
+      if (a.category !== 'ongoing' && b.category === 'ongoing') return 1;
+      return getProgramTimestamp(b) - getProgramTimestamp(a);
     });
 
-    if (category) {
-      const target = category.toLowerCase();
+    if (category && category !== 'all') {
+      const target = category.toLowerCase().trim();
       data = data.filter((p: any) => {
-        const cat = (p.category || '').toLowerCase();
-        const stat = (p.status || '').toLowerCase();
-        return cat === target || stat === target;
+        const cat = (p.category || '').toLowerCase().trim();
+        return cat === target;
       });
     }
 
