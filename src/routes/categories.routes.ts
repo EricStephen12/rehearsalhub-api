@@ -41,11 +41,26 @@ router.get('/page', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/zone-page', requireAuth, async (req, res) => {
+router.get('/zone-page', requireAuth, async (req: any, res) => {
   try {
-    const { zoneId } = req.query;
-    const rows = await db.select().from(zonePageCategories)
-      .where(zoneId ? sql`${zonePageCategories.rawData}->>'zoneId' = ${zoneId as string} OR ${zonePageCategories.rawData}->>'zone_id' = ${zoneId as string}` : undefined);
+    const auth = res.locals.auth;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const effectiveZoneId = (req.query.zoneId && req.query.zoneId !== 'all') ? String(req.query.zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+
+    let rows: any[] = [];
+    if (effectiveZoneId && effectiveZoneId !== 'all') {
+      const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
+      const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+
+      rows = await db.select().from(zonePageCategories).where(
+        sql`lower(replace(${zonePageCategories.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+            lower(replace(${zonePageCategories.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR 
+            lower(${zonePageCategories.rawData}->>'zoneId') = ${withHyphen} OR 
+            lower(${zonePageCategories.rawData}->>'zone_id') = ${withHyphen}`
+      );
+    } else {
+      rows = await db.select().from(zonePageCategories);
+    }
     
     const data = rows.map(mergeRawRow);
     res.json({ success: true, data });

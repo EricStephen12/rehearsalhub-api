@@ -172,17 +172,28 @@ router.get('/directory', requireAuth, async (req, res) => {
   const targetZone = (requestedZoneCode && requestedZoneCode !== 'all') ? requestedZoneCode : (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
   if (targetZone) {
+    const withoutHyphen = targetZone.replace(/-/g, '').toLowerCase();
+    const withHyphen = targetZone.includes('-') ? targetZone.toLowerCase() : targetZone.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+
     const [directProfiles, zmRows, hmRows] = await Promise.all([
       db.select().from(profiles).where(
         sql`(
-          lower(${profiles.rawData}->>'zone_code') = ${targetZone.toLowerCase()} OR 
-          lower(${profiles.rawData}->>'zoneCode') = ${targetZone.toLowerCase()} OR 
-          lower(${profiles.rawData}->>'zoneId') = ${targetZone.toLowerCase()} OR 
-          lower(${profiles.rawData}->>'zone_id') = ${targetZone.toLowerCase()}
+          lower(replace(${profiles.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR 
+          lower(replace(${profiles.rawData}->>'zoneCode', '-', '')) = ${withoutHyphen} OR 
+          lower(replace(${profiles.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+          lower(replace(${profiles.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR
+          lower(${profiles.rawData}->>'zone_code') = ${withHyphen} OR
+          lower(${profiles.rawData}->>'zoneCode') = ${withHyphen} OR
+          lower(${profiles.rawData}->>'zoneId') = ${withHyphen} OR
+          lower(${profiles.rawData}->>'zone_id') = ${withHyphen}
         )`
       ),
-      db.select().from(zoneMembers).where(sql`lower(${zoneMembers.zoneId}) = ${targetZone.toLowerCase()}`),
-      db.select().from(hqMembers).where(sql`lower(${hqMembers.hqGroupId}) = ${targetZone.toLowerCase()}`),
+      db.select().from(zoneMembers).where(
+        sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${zoneMembers.zoneId}) = ${withHyphen}`
+      ),
+      db.select().from(hqMembers).where(
+        sql`lower(replace(${hqMembers.hqGroupId}, '-', '')) = ${withoutHyphen} OR lower(${hqMembers.hqGroupId}) = ${withHyphen}`
+      ),
     ]);
 
     const targetUserIds = new Set<string>([

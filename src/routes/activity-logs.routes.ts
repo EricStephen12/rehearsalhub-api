@@ -57,8 +57,19 @@ router.get('/', requireAuth, async (req, res) => {
     if (category && category !== 'all') {
       rows = rows.filter((r) => r.category === category);
     }
-    if (zoneId && zoneId !== 'all') {
-      rows = rows.filter((r) => r.zoneId === zoneId);
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+
+    if (effectiveZoneId && effectiveZoneId !== 'all') {
+      const target = String(effectiveZoneId).toLowerCase();
+      const withoutHyphen = target.replace(/-/g, '');
+      const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
+
+      rows = rows.filter((r) => {
+        const rz = (r.zoneId || '').toLowerCase();
+        const rzWithoutHyphen = rz.replace(/-/g, '');
+        return !r.zoneId || rz === target || rz === withHyphen || rzWithoutHyphen === withoutHyphen;
+      });
     }
 
     res.json({ success: true, count: rows.length, data: rows });

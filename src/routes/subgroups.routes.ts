@@ -139,15 +139,26 @@ router.get('/:id/praise-nights', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, async (req: any, res) => {
   try {
-    const { zoneId } = req.query;
-    let query = db.select().from(subgroups);
-    const rows = zoneId && typeof zoneId === 'string'
-      ? await db.select().from(subgroups).where(
-          sql`${subgroups.zoneId} = ${zoneId} OR ${subgroups.rawData}->>'zoneId' = ${zoneId} OR ${subgroups.rawData}->>'zone_id' = ${zoneId}`
-        )
-      : await query;
+    const auth = res.locals.auth;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const effectiveZoneId = (req.query.zoneId && req.query.zoneId !== 'all') ? String(req.query.zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+
+    let rows: any[] = [];
+    if (effectiveZoneId && effectiveZoneId !== 'all') {
+      const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
+      const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+
+      rows = await db.select().from(subgroups).where(
+        sql`lower(replace(${subgroups.zoneId}, '-', '')) = ${withoutHyphen} OR 
+            lower(${subgroups.zoneId}) = ${withHyphen} OR 
+            lower(replace(${subgroups.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+            lower(replace(${subgroups.rawData}->>'zone_id', '-', '')) = ${withoutHyphen}`
+      );
+    } else {
+      rows = await db.select().from(subgroups);
+    }
 
     res.json({ success: true, data: rows.map(shapeSubgroup) });
   } catch (err) {

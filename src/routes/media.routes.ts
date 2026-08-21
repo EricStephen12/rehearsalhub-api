@@ -144,7 +144,22 @@ router.get('/', async (req, res) => {
       data = data.filter((item) => item.type === type);
     }
     if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
-      data = data.filter((item) => !item.zoneId || item.zoneId === zoneId || item.zoneId === 'global' || item.zoneId === '');
+      const target = String(zoneId).toLowerCase();
+      const withoutHyphen = target.replace(/-/g, '');
+      const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
+
+      data = data.filter((item) => {
+        const itemZone = (item.zoneId || '').toLowerCase();
+        const itemWithoutHyphen = itemZone.replace(/-/g, '');
+        return (
+          !item.zoneId ||
+          itemZone === 'global' ||
+          itemZone === '' ||
+          itemZone === target ||
+          itemZone === withHyphen ||
+          itemWithoutHyphen === withoutHyphen
+        );
+      });
     }
     if (featured === 'true') {
       data = data.filter((item) => item.featured);

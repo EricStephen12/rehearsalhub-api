@@ -63,11 +63,22 @@ router.get('/', requireAuth, async (req: any, res) => {
     const auth = res.locals.auth;
     const { zoneId, status, mine } = req.query;
 
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+
     let rows: any[] = [];
     if (mine === 'true' || auth.role === 'user' || auth.role === 'member') {
       rows = await db.select().from(submittedSongs).where(eq(submittedSongs.userId, auth.userId));
-    } else if (zoneId && zoneId !== 'all') {
-      rows = await db.select().from(submittedSongs).where(eq(submittedSongs.zoneId, String(zoneId)));
+    } else if (effectiveZoneId && effectiveZoneId !== 'all') {
+      const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
+      const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+
+      rows = await db.select().from(submittedSongs).where(
+        sql`lower(replace(${submittedSongs.zoneId}, '-', '')) = ${withoutHyphen} OR 
+            lower(${submittedSongs.zoneId}) = ${withHyphen} OR 
+            lower(replace(${submittedSongs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+            lower(replace(${submittedSongs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen}`
+      );
     } else {
       rows = await db.select().from(submittedSongs);
     }

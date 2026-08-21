@@ -87,9 +87,22 @@ router.get('/', requireAuth, async (req, res) => {
     const auth = res.locals.auth;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
 
+    const { zoneId } = req.query;
+    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : null;
+
     let rows;
     if (isHqAdmin) {
-      rows = await db.select().from(supportTickets).orderBy(desc(supportTickets.lastTimestamp)).limit(150);
+      if (effectiveZoneId) {
+        const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
+        const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+
+        rows = await db.select().from(supportTickets).where(
+          sql`lower(replace(${supportTickets.zoneId}, '-', '')) = ${withoutHyphen} OR 
+              lower(${supportTickets.zoneId}) = ${withHyphen}`
+        ).orderBy(desc(supportTickets.lastTimestamp)).limit(150);
+      } else {
+        rows = await db.select().from(supportTickets).orderBy(desc(supportTickets.lastTimestamp)).limit(150);
+      }
     } else {
       rows = await db.select().from(supportTickets).where(eq(supportTickets.userId, auth.userId)).orderBy(desc(supportTickets.lastTimestamp)).limit(50);
     }

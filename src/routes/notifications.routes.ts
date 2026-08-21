@@ -89,8 +89,12 @@ router.get('/', requireAuth, async (req, res) => {
           const notifZone = row.zoneId || (raw.zoneId as string) || (raw.zone_id as string);
           if (!notifZone || notifZone === 'all' || notifZone === 'global' || isHqAdmin) {
             visible = true;
-          } else if (userZone && userZone === notifZone) {
-            visible = true;
+          } else if (userZone && notifZone) {
+            const uNorm = userZone.replace(/-/g, '').toLowerCase();
+            const nNorm = notifZone.replace(/-/g, '').toLowerCase();
+            if (uNorm === nNorm || userZone.toLowerCase() === notifZone.toLowerCase()) {
+              visible = true;
+            }
           }
         } else if (isAdmin) {
           visible = true;

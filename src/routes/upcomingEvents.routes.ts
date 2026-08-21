@@ -19,13 +19,24 @@ upcomingEventsRouter.get('/', requireAuth, async (req: any, res: any) => {
 
     let events = rows.map(mergeRawRow);
 
-    if (zoneId) {
+    const auth = res.locals.auth;
+    const isHqAdmin = auth?.role === 'hq_admin' || auth?.role === 'admin';
+    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth?.zoneId as string | null) : null);
+
+    if (effectiveZoneId && effectiveZoneId !== 'all') {
+      const target = String(effectiveZoneId).toLowerCase();
+      const withoutHyphen = target.replace(/-/g, '');
+      const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
+
       events = events.filter((e: any) => {
+        const ez = (e.zoneId || e.zone_id || '').toLowerCase();
+        const ezWithoutHyphen = ez.replace(/-/g, '');
         return (
-          e.zoneId === zoneId ||
-          e.zone_id === zoneId ||
           e.isGlobal === true ||
-          !e.zoneId
+          !e.zoneId ||
+          ez === target ||
+          ez === withHyphen ||
+          ezWithoutHyphen === withoutHyphen
         );
       });
     }

@@ -52,10 +52,17 @@ router.get('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
     const { zoneId, date } = req.query;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
     let rows: any[] = [];
-    if (zoneId && zoneId !== 'all') {
-      rows = await db.select().from(attendance).where(eq(attendance.zoneId, String(zoneId)));
+    if (effectiveZoneId && effectiveZoneId !== 'all') {
+      const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
+      const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+
+      rows = await db.select().from(attendance).where(
+        sql`lower(replace(${attendance.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${attendance.zoneId}) = ${withHyphen}`
+      );
     } else {
       rows = await db.select().from(attendance);
     }
