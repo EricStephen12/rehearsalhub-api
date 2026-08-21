@@ -10,7 +10,7 @@ const router = Router();
 const idSchema = z.string().min(1).max(200);
 
 /** GET /settings/:id — geofence / app settings (raw_data table). */
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) {
@@ -19,7 +19,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     }
     const [row] = await db.select().from(settings).where(eq(settings.id, parsed.data)).limit(1);
     if (!row) {
-      res.status(404).json({ success: false, error: 'Not found' });
+      res.json({ success: true, data: null });
       return;
     }
     const merged = mergeRawRow(row);
@@ -37,8 +37,100 @@ router.get('/:id', requireAuth, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[settings/:id]', err);
+    console.error('[settings/:id:get]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** PUT /settings/:id — Update or create app / geofence setting */
+router.put('/:id', requireAuth, async (req, res) => {
+  try {
+    const parsed = idSchema.safeParse(req.params.id);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'Invalid id' });
+      return;
+    }
+
+    const id = parsed.data;
+    const bodyData = req.body || {};
+    const now = new Date().toISOString();
+
+    const [existing] = await db.select().from(settings).where(eq(settings.id, id)).limit(1);
+
+    const mergedData = {
+      ...(existing ? mergeRawRow(existing) : {}),
+      ...bodyData,
+      id,
+      updatedAt: now,
+    };
+
+    if (existing) {
+      await db
+        .update(settings)
+        .set({
+          rawData: mergedData,
+          updatedAt: new Date(),
+        })
+        .where(eq(settings.id, id));
+    } else {
+      await db.insert(settings).values({
+        id,
+        rawData: mergedData,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
+    res.json({ success: true, data: mergedData });
+  } catch (err) {
+    console.error('[settings/:id:put]', err);
+    res.status(500).json({ success: false, error: 'Failed to update settings' });
+  }
+});
+
+/** PATCH /settings/:id — Partial update setting */
+router.patch('/:id', requireAuth, async (req, res) => {
+  try {
+    const parsed = idSchema.safeParse(req.params.id);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'Invalid id' });
+      return;
+    }
+
+    const id = parsed.data;
+    const bodyData = req.body || {};
+    const now = new Date().toISOString();
+
+    const [existing] = await db.select().from(settings).where(eq(settings.id, id)).limit(1);
+
+    const mergedData = {
+      ...(existing ? mergeRawRow(existing) : {}),
+      ...bodyData,
+      id,
+      updatedAt: now,
+    };
+
+    if (existing) {
+      await db
+        .update(settings)
+        .set({
+          rawData: mergedData,
+          updatedAt: new Date(),
+        })
+        .where(eq(settings.id, id));
+    } else {
+      await db.insert(settings).values({
+        id,
+        rawData: mergedData,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
+    res.json({ success: true, data: mergedData });
+  } catch (err) {
+    console.error('[settings/:id:patch]', err);
+    res.status(500).json({ success: false, error: 'Failed to update settings' });
   }
 });
 
