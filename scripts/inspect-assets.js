@@ -3,20 +3,25 @@ const postgres = require('postgres');
 const sql = postgres(process.env.DATABASE_URL);
 
 async function check() {
-  const assets = await sql`SELECT id, raw_data FROM media_assets LIMIT 5`;
-  console.log('Sample media_assets:', JSON.stringify(assets, null, 2));
+  const t0 = Date.now();
+  const [videoCount] = await sql`SELECT count(*) FROM media_videos`;
+  const [assetCount] = await sql`SELECT count(*) FROM media_assets`;
+  const [zoneAssetCount] = await sql`SELECT count(*) FROM zone_media_assets`;
+  const [songsCount] = await sql`SELECT count(*) FROM songs`;
+  const [ministeredCount] = await sql`SELECT count(*) FROM ministered_songs`;
 
-  const zoneAssets = await sql`SELECT id, raw_data FROM zone_media_assets LIMIT 5`;
-  console.log('Sample zone_media_assets:', JSON.stringify(zoneAssets, null, 2));
-
-  const typesCount = await sql`
-    SELECT raw_data->>'type' as type, count(*) 
-    FROM media_assets 
-    GROUP BY raw_data->>'type'
-  `;
-  console.log('media_assets by type:', typesCount);
+  console.log('Database Counts:', {
+    media_videos: videoCount.count,
+    media_assets: assetCount.count,
+    zone_media_assets: zoneAssetCount.count,
+    songs: songsCount.count,
+    ministered_songs: ministeredCount.count,
+    total_media: Number(videoCount.count) + Number(assetCount.count) + Number(zoneAssetCount.count),
+    queryTimeMs: Date.now() - t0,
+  });
 
   await sql.end();
 }
 
 check();
+

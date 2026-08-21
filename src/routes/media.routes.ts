@@ -71,21 +71,59 @@ function normalizeAsset(row: any, source: 'media_videos' | 'media_assets' | 'zon
   };
 }
 
-// GET /media/stats - Summary counts across all 7,600+ media assets
+// In-memory cache for all 7,700+ media assets
+let cachedMediaAssets: any[] | null = null;
+let lastMediaCacheTime = 0;
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+export function invalidateMediaCache() {
+  cachedMediaAssets = null;
+  lastMediaCacheTime = 0;
+}
+
+async function loadAllMediaAssets(): Promise<any[]> {
+  const now = Date.now();
+  if (cachedMediaAssets && now - lastMediaCacheTime < CACHE_TTL_MS) {
+    return cachedMediaAssets;
+  }
+
+  const [videoRows, assetRows, zoneAssetRows] = await Promise.all([
+    db.select().from(mediaVideos),
+    db.select().from(mediaAssets),
+    db.select().from(zoneMediaAssets),
+  ]);
+
+  const combined = [
+    ...videoRows.map((r) => normalizeAsset(r, 'media_videos')),
+    ...assetRows.map((r) => normalizeAsset(r, 'media_assets')),
+    ...zoneAssetRows.map((r) => normalizeAsset(r, 'zone_media_assets')),
+  ];
+
+  combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  cachedMediaAssets = combined;
+  lastMediaCacheTime = now;
+  return combined;
+}
+
+// GET /media/stats - Summary counts across all 7,700+ media assets
 router.get('/stats', async (_req, res) => {
   try {
-    const [videoCount] = await db.select({ count: sql`count(*)` }).from(mediaVideos);
-    const [assetCount] = await db.select({ count: sql`count(*)` }).from(mediaAssets);
-    const [zoneAssetCount] = await db.select({ count: sql`count(*)` }).from(zoneMediaAssets);
+    const all = await loadAllMediaAssets();
+    const videoCount = all.filter((m) => m.type === 'video').length;
+    const audioCount = all.filter((m) => m.type === 'audio').length;
+    const imageCount = all.filter((m) => m.type === 'image').length;
 
-    const total = Number(videoCount.count) + Number(assetCount.count) + Number(zoneAssetCount.count);
     res.json({
       success: true,
       data: {
-        total,
-        mediaVideos: Number(videoCount.count),
-        mediaAssets: Number(assetCount.count),
-        zoneMediaAssets: Number(zoneAssetCount.count),
+        total: all.length,
+        audio: audioCount,
+        video: videoCount,
+        image: imageCount,
+        mediaVideos: all.filter((m) => m.source === 'media_videos').length,
+        mediaAssets: all.filter((m) => m.source === 'media_assets').length,
+        zoneMediaAssets: all.filter((m) => m.source === 'zone_media_assets').length,
       },
     });
   } catch (err) {
@@ -94,26 +132,13 @@ router.get('/stats', async (_req, res) => {
   }
 });
 
-// GET /media - List media with filtering and pagination
+// GET /media - List media with filtering, search, and scalable pagination
 router.get('/', async (req, res) => {
   try {
-    const { zoneId, type, search, featured, isHqOnly, limit = '200' } = req.query;
-    const limitNum = Math.min(Number(limit) || 200, 1000);
+    const { zoneId, type, search, featured, isHqOnly, limit, page = '1' } = req.query;
+    const allAssets = await loadAllMediaAssets();
 
-    // Fetch from all media sources
-    const [videoRows, assetRows, zoneAssetRows] = await Promise.all([
-      db.select().from(mediaVideos).limit(limitNum),
-      db.select().from(mediaAssets).limit(limitNum),
-      db.select().from(zoneMediaAssets).limit(limitNum),
-    ]);
-
-    const combined = [
-      ...videoRows.map((r) => normalizeAsset(r, 'media_videos')),
-      ...assetRows.map((r) => normalizeAsset(r, 'media_assets')),
-      ...zoneAssetRows.map((r) => normalizeAsset(r, 'zone_media_assets')),
-    ];
-
-    let data = combined;
+    let data = allAssets;
 
     if (type && type !== 'all') {
       data = data.filter((item) => item.type === type);
@@ -127,22 +152,38 @@ router.get('/', async (req, res) => {
     if (isHqOnly === 'true') {
       data = data.filter((item) => item.forHq);
     }
-    if (search && typeof search === 'string') {
+    if (search && typeof search === 'string' && search.trim()) {
       const q = search.toLowerCase().trim();
       data = data.filter(
         (item) =>
-          item.title.toLowerCase().includes(q) ||
-          item.description.toLowerCase().includes(q) ||
-          item.url.toLowerCase().includes(q)
+          (item.title && item.title.toLowerCase().includes(q)) ||
+          (item.description && item.description.toLowerCase().includes(q)) ||
+          (item.url && item.url.toLowerCase().includes(q)) ||
+          (item.format && item.format.toLowerCase().includes(q))
       );
     }
 
-    data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const totalMatching = data.length;
 
-    // Slice to requested limit
-    const finalData = data.slice(0, limitNum);
+    // If limit is provided, apply pagination; otherwise return all filtered (up to 15,000)
+    let finalData = data;
+    const pageNum = Math.max(Number(page) || 1, 1);
+    
+    if (limit) {
+      const limitNum = Math.min(Number(limit) || 200, 20000);
+      const offset = (pageNum - 1) * limitNum;
+      finalData = data.slice(offset, offset + limitNum);
+    }
 
-    res.json({ success: true, count: finalData.length, total: data.length, data: finalData });
+    res.json({
+      success: true,
+      count: finalData.length,
+      total: totalMatching,
+      grandTotal: allAssets.length,
+      page: pageNum,
+      totalPages: limit ? Math.ceil(totalMatching / Math.max(Number(limit) || 200, 1)) : 1,
+      data: finalData,
+    });
   } catch (err) {
     console.error('[media:get]', err);
     res.status(500).json({ success: false, error: 'Failed to fetch media' });
@@ -265,6 +306,7 @@ router.post('/', requireAuth, async (req: any, res) => {
       rawData,
     });
 
+    invalidateMediaCache();
     broadcast('media', 'all', rawData);
     broadcast('media', id, rawData);
 
@@ -314,6 +356,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
       })
       .where(eq(mediaVideos.id, id));
 
+    invalidateMediaCache();
     broadcast('media', 'all', updatedRaw);
     broadcast('media', id, updatedRaw);
 
@@ -336,6 +379,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
       db.delete(zoneMediaAssets).where(eq(zoneMediaAssets.id, id)),
     ]);
 
+    invalidateMediaCache();
     broadcast('media', 'all', { id, deleted: true });
     broadcast('media', id, { id, deleted: true });
 
