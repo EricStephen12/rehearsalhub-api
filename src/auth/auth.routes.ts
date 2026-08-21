@@ -244,6 +244,81 @@ router.post('/kingschat-login', async (req, res) => {
   }
 });
 
+// In-memory store for 6-digit password reset OTPs (email -> { otp, expiresAt })
+const otpStore = new Map<string, { otp: string; expiresAt: number }>();
+
+// POST /auth/forgot-password/send-otp
+router.post('/forgot-password/send-otp', async (req, res) => {
+  try {
+    const email = req.body.email?.trim()?.toLowerCase();
+    if (!email) {
+      res.status(400).json({ success: false, error: 'Email is required' });
+      return;
+    }
+
+    const { sql } = await import('drizzle-orm');
+    const { db } = await import('../db');
+    const { profiles } = await import('../schema');
+    const { sendPasswordResetOtpEmail } = await import('../services/email.service');
+
+    const [profile] = await db.select().from(profiles)
+      .where(sql`lower(${profiles.email}) = ${email}`).limit(1);
+
+    if (!profile) {
+      res.status(404).json({ success: false, error: 'No account registered with this email.' });
+      return;
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    otpStore.set(email, { otp, expiresAt });
+
+    const singerName = profile.firstName || 'Singer';
+    await sendPasswordResetOtpEmail(email, singerName, otp);
+
+    res.json({ success: true, message: `OTP code sent to ${email}` });
+  } catch (err: any) {
+    console.error('[auth/forgot-password/send-otp]', err);
+    res.status(500).json({ success: false, error: 'Failed to send OTP code' });
+  }
+});
+
+// POST /auth/forgot-password/verify-otp
+router.post('/forgot-password/verify-otp', async (req, res) => {
+  try {
+    const email = req.body.email?.trim()?.toLowerCase();
+    const otp = req.body.otp?.trim();
+
+    if (!email || !otp) {
+      res.status(400).json({ success: false, error: 'Email and OTP are required' });
+      return;
+    }
+
+    const stored = otpStore.get(email);
+    if (!stored) {
+      res.status(400).json({ success: false, error: 'No OTP requested for this email or OTP expired' });
+      return;
+    }
+
+    if (Date.now() > stored.expiresAt) {
+      otpStore.delete(email);
+      res.status(400).json({ success: false, error: 'OTP code has expired. Please request a new one.' });
+      return;
+    }
+
+    if (stored.otp !== otp) {
+      res.status(400).json({ success: false, error: 'Invalid OTP code. Please check and try again.' });
+      return;
+    }
+
+    res.json({ success: true, message: 'OTP verified successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Failed to verify OTP' });
+  }
+});
+
 // POST /auth/reset-password
 router.post('/reset-password', async (req, res) => {
   const parsed = resetPasswordSchema.safeParse(req.body);
@@ -254,13 +329,14 @@ router.post('/reset-password', async (req, res) => {
 
   try {
     const { email, newPassword } = parsed.data;
+    const cleanEmail = email.toLowerCase();
 
     const { sql } = await import('drizzle-orm');
     const { db } = await import('../db');
     const { profiles } = await import('../schema');
 
     const [profile] = await db.select().from(profiles)
-      .where(sql`lower(${profiles.email}) = ${email.toLowerCase()}`).limit(1);
+      .where(sql`lower(${profiles.email}) = ${cleanEmail}`).limit(1);
 
     if (!profile) {
       res.status(400).json({ success: false, error: 'No account found with that email.' });
@@ -268,8 +344,9 @@ router.post('/reset-password', async (req, res) => {
     }
 
     await setPasswordForProfile(profile.id, newPassword);
+    otpStore.delete(cleanEmail);
 
-    res.json({ success: true });
+    res.json({ success: true, message: 'Password has been reset successfully' });
   } catch (err) {
     if (err instanceof AuthError) {
       res.status(err.statusCode).json({ success: false, error: err.message });

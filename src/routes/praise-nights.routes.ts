@@ -44,7 +44,12 @@ router.get('/', requireAuth, async (req, res) => {
     });
 
     if (category) {
-      data = data.filter((p: any) => p.category === category);
+      const target = category.toLowerCase();
+      data = data.filter((p: any) => {
+        const cat = (p.category || '').toLowerCase();
+        const stat = (p.status || '').toLowerCase();
+        return cat === target || stat === target;
+      });
     }
 
     res.json({ success: true, data });

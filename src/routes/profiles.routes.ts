@@ -425,7 +425,7 @@ router.post('/:userId/approve', requireAuth, async (req, res) => {
     if (!existing) { res.status(404).json({ success: false, error: 'Profile not found' }); return; }
 
     const raw = asRaw(existing.rawData);
-    const updatedRaw = { ...raw, pending_hq_approval: false, is_active: true, approved_by: auth.userId, approved_at: new Date().toISOString() };
+    const updatedRaw = { ...raw, pending_hq_approval: false, is_active: true, status: 'active', approved_by: auth.userId, approved_at: new Date().toISOString() };
     await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
 
     // Notify user their account is approved
@@ -442,6 +442,15 @@ router.post('/:userId/approve', requireAuth, async (req, res) => {
       createdAt: new Date().toISOString(),
       rawData: { type: 'join_request_approved', approvedBy: auth.userId, approvedAt: new Date().toISOString(), status: 'approved', zoneCode: raw.zone_code },
     }).catch(() => {});
+
+    // Dispatch email notification via Nodemailer
+    const targetEmail = typeof existing.email === 'string' ? existing.email : (typeof raw.email === 'string' ? raw.email : '');
+    if (targetEmail) {
+      const singerName = [existing.firstName, existing.lastName].filter(Boolean).join(' ') || (typeof raw.first_name === 'string' ? raw.first_name : 'Singer');
+      const zoneName = typeof raw.zone_code === 'string' ? raw.zone_code : undefined;
+      const { sendAccountApprovalEmail } = await import('../services/email.service');
+      sendAccountApprovalEmail(targetEmail, singerName, zoneName).catch(() => {});
+    }
 
     res.json({ success: true, message: 'Account approved successfully' });
   } catch (err: any) {
@@ -467,7 +476,7 @@ router.post('/:userId/reject', requireAuth, async (req, res) => {
     const updatedRaw = { ...raw, pending_hq_approval: false, is_active: false, rejected: true, rejected_by: auth.userId, rejected_at: new Date().toISOString(), rejection_reason: reason || null };
     await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
 
-    const notifId = require('crypto').randomUUID();
+    const notifId = crypto.randomUUID();
     await db.insert(notifications).values({
       id: notifId,
       type: 'join_request_rejected',

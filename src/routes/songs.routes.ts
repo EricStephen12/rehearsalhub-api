@@ -54,11 +54,7 @@ const getSongsHandler = async (req: any, res: any) => {
     const targetProgramId = (programId || praiseNightId) as string | undefined;
 
     let rows: any[] = [];
-    if (targetProgramId && zoneId) {
-      rows = await db.select().from(songs)
-        .where(or(eq(songs.praiseNightId, targetProgramId), eq(songs.zoneId, zoneId as string)))
-        .orderBy(asc(songs.title));
-    } else if (targetProgramId) {
+    if (targetProgramId) {
       rows = await db.select().from(songs)
         .where(eq(songs.praiseNightId, targetProgramId))
         .orderBy(asc(songs.title));
