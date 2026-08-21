@@ -7,18 +7,19 @@ import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
 
-/** GET /notifications — per-user read state, audience-scoped */
-router.get('/', requireAuth, async (_req, res) => {
+/** GET /notifications — per-user read state, audience-scoped, and admin feeds */
+router.get('/', requireAuth, async (req, res) => {
   try {
-    const userId = res.locals.auth.userId as string;
+    const auth = res.locals.auth;
+    const userId = auth.userId as string;
+    const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin' || req.query.admin === 'true';
 
     const [notifRows, groupRows, readRows] = await Promise.all([
-      db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(100),
+      db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(150),
       db
         .select()
         .from(userGroups)
         .where(sql`${userGroups.rawData}->>'user_id' = ${userId} OR ${userGroups.rawData}->>'userId' = ${userId}`),
-      // Per-user read receipts stored with composite key userId_notificationId
       db
         .select()
         .from(userNotifications)
@@ -57,30 +58,123 @@ router.get('/', requireAuth, async (_req, res) => {
         const targetGroup =
           (merged.target_group as string | undefined) || (merged.targetGroup as string | undefined);
 
-        let visible = audience === 'all';
-        if (audience === 'individual' && targetUser === userId) visible = true;
-        if (audience === 'group' && targetGroup && groupNames.has(targetGroup)) visible = true;
+        // Admins can see all broadcasts
+        let visible = isAdmin || audience === 'all';
+        if (!visible) {
+          if (audience === 'individual' && targetUser === userId) visible = true;
+          if (audience === 'group' && targetGroup && groupNames.has(targetGroup)) visible = true;
+        }
         if (!visible) return null;
+
+        const title = row.title ?? (merged.title as string | undefined) ?? 'Broadcast Notification';
+        const message = row.message ?? (merged.message as string | undefined) ?? (merged.body as string | undefined) ?? '';
+        const body = (merged.body as string | undefined) || message;
+        const category = row.category || merged.category || 'general';
+        const priority = row.priority || merged.priority || 'normal';
+        const senderName = (merged.sender_name as string) || (merged.senderName as string) || (merged.sentBy as string) || 'HQ Administrator';
+        const sentBy = (merged.sender_name as string) || (merged.senderName as string) || senderName;
+        const createdAt = row.createdAt ?? (merged.createdAt as string | undefined) ?? (merged.created_at as string | undefined) ?? new Date().toISOString();
 
         return {
           ...merged,
           id: row.id,
-          title: row.title ?? (merged.title as string | undefined),
-          body: (merged.body as string | undefined) || row.message || (merged.message as string | undefined),
-          message: row.message ?? (merged.message as string | undefined),
+          title,
+          message,
+          body,
+          category,
+          priority,
+          senderName,
+          sentBy,
+          targetAudience: audience,
           target_audience: audience,
-          created_at: row.createdAt ?? (merged.created_at as string | undefined),
+          createdAt,
+          created_at: createdAt,
+          sentAt: createdAt,
           is_read: readIds.has(row.id),
         };
       })
       .filter((n): n is NonNullable<typeof n> => n !== null);
 
-    res.json({ success: true, data });
+    res.json({ success: true, count: data.length, data });
   } catch (err) {
-    console.error('[notifications]', err);
+    console.error('[notifications:GET]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
 });
+
+/** Handler for creating broadcast notification */
+const createBroadcastHandler = async (req: any, res: any) => {
+  try {
+    const auth = res.locals.auth;
+    const body = req.body || {};
+    const { title, message, body: altBody, type, category, priority, targetAudience, targetZoneId, targetUserId, senderId, senderName, actionUrl } = body;
+
+    const notifTitle = (title || '').trim();
+    const notifMessage = (message || altBody || '').trim();
+
+    if (!notifTitle || !notifMessage) {
+      res.status(400).json({ success: false, error: 'Title and message are required' });
+      return;
+    }
+
+    const id = body.id || `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const now = new Date().toISOString();
+    const sName = senderName || auth.name || auth.email || 'HQ Administrator';
+
+    const rawData = {
+      ...body,
+      id,
+      title: notifTitle,
+      message: notifMessage,
+      body: notifMessage,
+      type: type || 'info',
+      category: category || 'general',
+      priority: priority || 'normal',
+      target_audience: targetAudience || 'all',
+      target_zone_id: targetZoneId || null,
+      target_user_id: targetUserId || null,
+      sender_id: senderId || auth.userId,
+      sender_name: sName,
+      sentBy: sName,
+      created_at: now,
+      createdAt: now,
+      sentAt: now,
+      is_read: false,
+    };
+
+    const newRecord = {
+      id,
+      title: notifTitle,
+      message: notifMessage,
+      type: type || 'info',
+      category: category || 'general',
+      priority: priority || 'normal',
+      targetAudience: targetAudience || 'all',
+      targetUserId: targetUserId || null,
+      zoneId: targetZoneId || null,
+      senderId: senderId || auth.userId,
+      actionUrl: actionUrl || null,
+      isRead: false,
+      createdAt: now,
+      rawData,
+    };
+
+    await db.insert(notifications).values(newRecord);
+
+    res.status(201).json({
+      success: true,
+      message: 'Broadcast notification published successfully',
+      data: mergeRawRow(newRecord),
+    });
+  } catch (err) {
+    console.error('[notifications:CREATE]', err);
+    res.status(500).json({ success: false, error: 'Failed to create broadcast notification' });
+  }
+};
+
+/** POST /notifications & POST /notifications/broadcast */
+router.post('/', requireAuth, createBroadcastHandler);
+router.post('/broadcast', requireAuth, createBroadcastHandler);
 
 /** PATCH /notifications/:id — mark single notification read for this user */
 router.patch('/:id', requireAuth, async (req, res) => {
@@ -90,7 +184,6 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const { is_read } = req.body;
 
     if (is_read === true) {
-      // Upsert a per-user read receipt using composite key
       const receiptId = `${userId}_${notifId}`;
       const [existing] = await db
         .select()
@@ -119,15 +212,25 @@ router.patch('/:id', requireAuth, async (req, res) => {
   }
 });
 
+/** DELETE /notifications/:id — delete a notification */
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.delete(notifications).where(eq(notifications.id, id));
+    res.json({ success: true, message: 'Notification deleted successfully' });
+  } catch (err) {
+    console.error('[notifications/:id DELETE]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete notification' });
+  }
+});
+
 /** PATCH /notifications/read-all — mark all visible notifications read for this user */
 router.patch('/read-all', requireAuth, async (req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
 
-    // Get all notification IDs
     const notifRows = await db.select({ id: notifications.id }).from(notifications);
 
-    // Fetch existing read receipts to avoid duplicate inserts
     const existingReceipts = await db
       .select({ id: userNotifications.id })
       .from(userNotifications)
@@ -146,7 +249,6 @@ router.patch('/read-all', requireAuth, async (req, res) => {
       }));
 
     if (toInsert.length > 0) {
-      // Insert in batches of 50
       for (let i = 0; i < toInsert.length; i += 50) {
         await db.insert(userNotifications).values(toInsert.slice(i, i + 50));
       }
@@ -159,57 +261,13 @@ router.patch('/read-all', requireAuth, async (req, res) => {
   }
 });
 
-/** POST /notifications/broadcast — admin broadcast (creates a notification record) */
-router.post('/broadcast', requireAuth, async (req, res) => {
-  try {
-    const auth = res.locals.auth;
-    const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
-    if (!isAdmin) {
-      res.status(403).json({ success: false, error: 'Forbidden' });
-      return;
-    }
-
-    const { title, message, type, category, priority, targetAudience, targetZoneId, targetUserId, senderId, senderName, actionUrl } = req.body;
-
-    if (!title?.trim() || !message?.trim()) {
-      res.status(400).json({ success: false, error: 'title and message are required' });
-      return;
-    }
-
-    const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    await db.insert(notifications).values({
-      id,
-      title: title.trim(),
-      message: message.trim(),
-      type: type || 'info',
-      category: category || 'admin',
-      priority: priority || 'medium',
-      targetAudience: targetAudience || 'all',
-      targetUserId: targetUserId || null,
-      zoneId: targetZoneId || null,
-      senderId: senderId || auth.userId,
-      actionUrl: actionUrl || null,
-      isRead: false,
-      createdAt: new Date().toISOString(),
-      rawData: {
-        sender_name: senderName || auth.userId,
-        target_zone_id: targetZoneId || null,
-      },
-    });
-
-    res.json({ success: true, data: { id } });
-  } catch (err) {
-    console.error('[notifications/broadcast]', err);
-    res.status(500).json({ success: false, error: 'Something went wrong' });
-  }
-});
-
+/** POST /notifications/send — Expo push broadcast */
 router.post('/send', requireAuth, async (req, res) => {
   try {
     const { recipientIds, title, body, data } = req.body;
     if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
-       res.status(400).json({ success: false, error: 'recipientIds array is required' });
-       return;
+      res.status(400).json({ success: false, error: 'recipientIds array is required' });
+      return;
     }
 
     const { inArray } = await import('drizzle-orm');
@@ -232,7 +290,7 @@ router.post('/send', requireAuth, async (req, res) => {
       return;
     }
 
-    const payload = expoTokens.map(token => ({
+    const payload = expoTokens.map((token) => ({
       to: token,
       sound: 'default',
       title,
@@ -263,4 +321,5 @@ router.post('/send', requireAuth, async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to send push notifications.' });
   }
 });
+
 export default router;
