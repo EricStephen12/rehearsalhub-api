@@ -8,6 +8,8 @@ import {
   subgroupSongs,
   zonePraiseNights,
   subgroupPraiseNights,
+  programs,
+  zonePrograms,
 } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
@@ -56,7 +58,9 @@ const getSongsHandler = async (req: any, res: any) => {
     let rows: any[] = [];
     if (targetProgramId) {
       const [mainRows, zRows] = await Promise.all([
-        db.select().from(songs).where(eq(songs.praiseNightId, targetProgramId)),
+        db.select().from(songs).where(
+          sql`${songs.praiseNightId} = ${targetProgramId} OR ${songs.rawData}->>'praiseNightId' = ${targetProgramId} OR ${songs.rawData}->>'programId' = ${targetProgramId} OR lower(${songs.rawData}->>'praise_night_id') = ${targetProgramId.toLowerCase()}`
+        ),
         db.select().from(zoneSongs).where(
           sql`${zoneSongs.rawData}->>'praiseNightId' = ${targetProgramId} OR ${zoneSongs.rawData}->>'programId' = ${targetProgramId} OR lower(${zoneSongs.rawData}->>'praise_night_id') = ${targetProgramId.toLowerCase()}`
         ),
@@ -65,6 +69,19 @@ const getSongsHandler = async (req: any, res: any) => {
       rows = [...mainRows, ...mergedZ].sort((a, b) =>
         String(a.title || '').localeCompare(String(b.title || ''))
       );
+
+      // Fallback: check if the program itself has embedded songs
+      if (rows.length === 0) {
+        const [prog] = await db.select().from(programs).where(eq(programs.id, targetProgramId)).limit(1);
+        const [zProg] = !prog ? await db.select().from(zonePrograms).where(eq(zonePrograms.id, targetProgramId)).limit(1) : [null];
+        const p = prog || zProg;
+        if (p) {
+          const raw = mergeRawRow(p);
+          if (Array.isArray(raw.songs) && raw.songs.length > 0) {
+            rows = raw.songs;
+          }
+        }
+      }
     } else if (zoneId) {
       const cleanZone = (zoneId as string).toLowerCase();
       const withoutHyphen = cleanZone.replace(/-/g, '');
