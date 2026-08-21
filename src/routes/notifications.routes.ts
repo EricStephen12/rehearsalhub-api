@@ -102,7 +102,23 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-/** Handler for creating broadcast notification */
+/** GET /notifications/:id — get single notification */
+router.get('/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [row] = await db.select().from(notifications).where(eq(notifications.id, id)).limit(1);
+    if (!row) {
+      res.status(404).json({ success: false, error: 'Notification not found' });
+      return;
+    }
+    res.json({ success: true, data: mergeRawRow(row) });
+  } catch (err) {
+    console.error('[notifications/:id GET]', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch notification' });
+  }
+});
+
+/** Handler for creating broadcast notification (CREATE) */
 const createBroadcastHandler = async (req: any, res: any) => {
   try {
     const auth = res.locals.auth;
@@ -172,47 +188,127 @@ const createBroadcastHandler = async (req: any, res: any) => {
   }
 };
 
-/** POST /notifications & POST /notifications/broadcast */
+/** POST /notifications & POST /notifications/broadcast (CREATE) */
 router.post('/', requireAuth, createBroadcastHandler);
 router.post('/broadcast', requireAuth, createBroadcastHandler);
 
-/** PATCH /notifications/:id — mark single notification read for this user */
+/** PATCH /notifications/:id — update read state or update notification fields (UPDATE) */
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
     const notifId = req.params.id;
-    const { is_read } = req.body;
+    const { is_read, title, message, body, priority, category, targetAudience, targetZoneId } = req.body;
 
-    if (is_read === true) {
-      const receiptId = `${userId}_${notifId}`;
-      const [existing] = await db
-        .select()
-        .from(userNotifications)
-        .where(eq(userNotifications.id, receiptId))
-        .limit(1);
+    // 1. Read receipt toggle
+    if (is_read !== undefined) {
+      if (is_read === true) {
+        const receiptId = `${userId}_${notifId}`;
+        const [existing] = await db
+          .select()
+          .from(userNotifications)
+          .where(eq(userNotifications.id, receiptId))
+          .limit(1);
 
-      if (!existing) {
-        await db.insert(userNotifications).values({
-          id: receiptId,
-          rawData: {
-            user_id: userId,
-            notification_id: notifId,
-            read_at: new Date().toISOString(),
-          },
-        });
+        if (!existing) {
+          await db.insert(userNotifications).values({
+            id: receiptId,
+            rawData: {
+              user_id: userId,
+              notification_id: notifId,
+              read_at: new Date().toISOString(),
+            },
+          });
+        }
+      } else {
+        await db.delete(userNotifications).where(eq(userNotifications.id, `${userId}_${notifId}`));
       }
-    } else if (is_read === false) {
-      await db.delete(userNotifications).where(eq(userNotifications.id, `${userId}_${notifId}`));
     }
 
-    res.json({ success: true });
+    // 2. Admin field update (title, message, category, priority, etc.)
+    if (title !== undefined || message !== undefined || body !== undefined || category !== undefined || priority !== undefined) {
+      const [existingRow] = await db.select().from(notifications).where(eq(notifications.id, notifId)).limit(1);
+      if (existingRow) {
+        const oldRaw = (existingRow.rawData && typeof existingRow.rawData === 'object') ? existingRow.rawData : {};
+        const updatedRaw = {
+          ...oldRaw,
+          ...(title !== undefined ? { title: title.trim() } : {}),
+          ...(message !== undefined ? { message: message.trim(), body: message.trim() } : {}),
+          ...(body !== undefined ? { body: body.trim(), message: body.trim() } : {}),
+          ...(category !== undefined ? { category } : {}),
+          ...(priority !== undefined ? { priority } : {}),
+          ...(targetAudience !== undefined ? { target_audience: targetAudience } : {}),
+          ...(targetZoneId !== undefined ? { target_zone_id: targetZoneId } : {}),
+          updated_at: new Date().toISOString(),
+        };
+
+        await db
+          .update(notifications)
+          .set({
+            ...(title !== undefined ? { title: title.trim() } : {}),
+            ...(message !== undefined ? { message: message.trim() } : {}),
+            ...(category !== undefined ? { category } : {}),
+            ...(priority !== undefined ? { priority } : {}),
+            ...(targetAudience !== undefined ? { targetAudience } : {}),
+            ...(targetZoneId !== undefined ? { zoneId: targetZoneId } : {}),
+            rawData: updatedRaw,
+          })
+          .where(eq(notifications.id, notifId));
+      }
+    }
+
+    res.json({ success: true, message: 'Notification updated successfully' });
   } catch (err) {
     console.error('[notifications/:id PATCH]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
 });
 
-/** DELETE /notifications/:id — delete a notification */
+/** PUT /notifications/:id (UPDATE) */
+router.put('/:id', requireAuth, async (req, res) => {
+  try {
+    const notifId = req.params.id;
+    const { title, message, body, priority, category, targetAudience, targetZoneId } = req.body;
+
+    const [existingRow] = await db.select().from(notifications).where(eq(notifications.id, notifId)).limit(1);
+    if (!existingRow) {
+      res.status(404).json({ success: false, error: 'Notification not found' });
+      return;
+    }
+
+    const oldRaw = (existingRow.rawData && typeof existingRow.rawData === 'object') ? existingRow.rawData : {};
+    const updatedRaw = {
+      ...oldRaw,
+      ...(title !== undefined ? { title: title.trim() } : {}),
+      ...(message !== undefined ? { message: message.trim(), body: message.trim() } : {}),
+      ...(body !== undefined ? { body: body.trim(), message: body.trim() } : {}),
+      ...(category !== undefined ? { category } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      ...(targetAudience !== undefined ? { target_audience: targetAudience } : {}),
+      ...(targetZoneId !== undefined ? { target_zone_id: targetZoneId } : {}),
+      updated_at: new Date().toISOString(),
+    };
+
+    await db
+      .update(notifications)
+      .set({
+        ...(title !== undefined ? { title: title.trim() } : {}),
+        ...(message !== undefined ? { message: message.trim() } : {}),
+        ...(category !== undefined ? { category } : {}),
+        ...(priority !== undefined ? { priority } : {}),
+        ...(targetAudience !== undefined ? { targetAudience } : {}),
+        ...(targetZoneId !== undefined ? { zoneId: targetZoneId } : {}),
+        rawData: updatedRaw,
+      })
+      .where(eq(notifications.id, notifId));
+
+    res.json({ success: true, message: 'Notification updated successfully' });
+  } catch (err) {
+    console.error('[notifications/:id PUT]', err);
+    res.status(500).json({ success: false, error: 'Failed to update notification' });
+  }
+});
+
+/** DELETE /notifications/:id — delete a notification (DELETE) */
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
