@@ -82,7 +82,7 @@ export const zoneSongs = pgTable('zone_songs', {
   zoneId: text('zone_id'),
   status: text('status'),
   audioFile: text('audio_file'),
-  categories: jsonb('categories'),
+  category: text('category'),
   rawData: jsonb('raw_data'),
 });
 

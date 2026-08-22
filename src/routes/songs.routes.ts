@@ -335,7 +335,7 @@ const createSongHandler = async (req: any, res: any) => {
         zoneId: songRow.zoneId,
         status: songRow.status,
         audioFile: songRow.audioFile,
-        categories: songRow.categories,
+        category: body.category || '',
         rawData: songRow.rawData,
       });
     }
