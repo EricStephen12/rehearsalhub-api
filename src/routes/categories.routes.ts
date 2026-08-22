@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
-import { categories, pageCategories, zonePageCategories } from '../schema';
+import { categories, zoneCategories, pageCategories, zonePageCategories } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
@@ -9,9 +9,36 @@ const router = Router();
 
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const rows = await db.select().from(categories);
-    const data = rows
-      .map((r) => {
+    const { zoneId } = req.query;
+    let data: any[] = [];
+
+    if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
+      const target = String(zoneId).toLowerCase();
+      const withoutHyphen = target.replace(/-/g, '');
+      const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
+
+      // Fetch zone-specific categories
+      const zoneRows = await db.select().from(zoneCategories).where(
+        sql`lower(replace(${zoneCategories.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+            lower(replace(${zoneCategories.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR 
+            lower(${zoneCategories.rawData}->>'zoneId') = ${withHyphen} OR 
+            lower(${zoneCategories.rawData}->>'zone_id') = ${withHyphen}`
+      );
+      data = zoneRows.map((r) => {
+        const m = mergeRawRow(r);
+        return {
+          id: String(m.id),
+          name: typeof m.name === 'string' ? m.name : '',
+          color: typeof m.color === 'string' ? m.color : null,
+          isActive: m.isActive !== false,
+          description: typeof m.description === 'string' ? m.description : null,
+          zoneId: m.zoneId || m.zone_id || zoneId,
+        };
+      });
+    } else {
+      // Global HQ categories
+      const rows = await db.select().from(categories);
+      data = rows.map((r) => {
         const m = mergeRawRow(r);
         return {
           id: String(m.id),
@@ -20,9 +47,10 @@ router.get('/', requireAuth, async (req, res) => {
           isActive: m.isActive !== false,
           description: typeof m.description === 'string' ? m.description : null,
         };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      });
+    }
 
+    data.sort((a, b) => a.name.localeCompare(b.name));
     res.json({ success: true, data });
   } catch (err) {
     console.error('[categories]', err);
@@ -73,25 +101,31 @@ router.get('/zone-page', requireAuth, async (req: any, res) => {
 // POST /categories — Create a song category
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const body = req.body || {};
-    const categoryId = body.id || `cat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
+    const { name, color, description, zoneId } = req.body;
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ success: false, error: 'Name is required' });
+      return;
+    }
+    const id = `cat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const row = {
-      id: categoryId,
+      id,
       rawData: {
-        id: categoryId,
-        name: body.name || '',
-        description: body.description || '',
-        color: body.color || '#8B5CF6',
-        icon: body.icon || 'Tag',
-        isActive: body.isActive !== false,
+        id,
+        name: name.trim(),
+        color: color || '#9333ea',
+        description: description?.trim() || null,
+        isActive: true,
+        zoneId: zoneId || 'global',
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        ...body,
       },
     };
 
-    await db.insert(categories).values(row);
+    if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
+      await db.insert(zoneCategories).values(row);
+    } else {
+      await db.insert(categories).values(row);
+    }
+
     res.status(201).json({ success: true, message: 'Category created', data: mergeRawRow(row) });
   } catch (err) {
     console.error('[categories POST]', err);
@@ -106,20 +140,32 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const body = req.body || {};
 
     const [existing] = await db.select().from(categories).where(sql`${categories.id} = ${categoryId}`).limit(1);
-    if (!existing) {
-      res.status(404).json({ success: false, error: 'Category not found' });
+    if (existing) {
+      const prevRaw = (existing.rawData || {}) as Record<string, unknown>;
+      const updatedRaw = {
+        ...prevRaw,
+        ...body,
+        updatedAt: new Date().toISOString(),
+      };
+      await db.update(categories).set({ rawData: updatedRaw }).where(sql`${categories.id} = ${categoryId}`);
+      res.json({ success: true, message: 'Category updated', data: mergeRawRow({ id: categoryId, rawData: updatedRaw }) });
       return;
     }
 
-    const prevRaw = (existing.rawData || {}) as Record<string, unknown>;
-    const updatedRaw = {
-      ...prevRaw,
-      ...body,
-      updatedAt: new Date().toISOString(),
-    };
+    const [zoneExisting] = await db.select().from(zoneCategories).where(sql`${zoneCategories.id} = ${categoryId}`).limit(1);
+    if (zoneExisting) {
+      const prevRaw = (zoneExisting.rawData || {}) as Record<string, unknown>;
+      const updatedRaw = {
+        ...prevRaw,
+        ...body,
+        updatedAt: new Date().toISOString(),
+      };
+      await db.update(zoneCategories).set({ rawData: updatedRaw }).where(sql`${zoneCategories.id} = ${categoryId}`);
+      res.json({ success: true, message: 'Category updated', data: mergeRawRow({ id: categoryId, rawData: updatedRaw }) });
+      return;
+    }
 
-    await db.update(categories).set({ rawData: updatedRaw }).where(sql`${categories.id} = ${categoryId}`);
-    res.json({ success: true, message: 'Category updated', data: mergeRawRow({ id: categoryId, rawData: updatedRaw }) });
+    res.status(404).json({ success: false, error: 'Category not found' });
   } catch (err) {
     console.error('[categories PATCH]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
@@ -131,6 +177,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const categoryId = req.params.id;
     await db.delete(categories).where(sql`${categories.id} = ${categoryId}`);
+    await db.delete(zoneCategories).where(sql`${zoneCategories.id} = ${categoryId}`);
     res.json({ success: true, message: 'Category deleted' });
   } catch (err) {
     console.error('[categories DELETE]', err);
