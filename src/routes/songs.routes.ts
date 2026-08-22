@@ -89,6 +89,24 @@ const getSongsHandler = async (req: any, res: any) => {
       const withoutHyphen = cleanZone.replace(/[\s-_]/g, '');
       const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
 
+      // Find programs belonging to this zone to extract embedded songs & program IDs
+      const [zProgs, progs] = await Promise.all([
+        db.select().from(zonePrograms).where(
+          sql`lower(replace(replace(${zonePrograms.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${zonePrograms.zoneId}) = ${cleanZone} OR lower(${zonePrograms.zoneId}) = ${withHyphen} OR lower(replace(replace(${zonePrograms.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zonePrograms.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen}`
+        ),
+        db.select().from(programs).where(
+          sql`lower(replace(replace(${programs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${programs.zoneId}) = ${cleanZone} OR lower(${programs.zoneId}) = ${withHyphen} OR lower(replace(replace(${programs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${programs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen}`
+        ),
+      ]);
+
+      const embeddedSongs: any[] = [];
+      [...zProgs, ...progs].forEach((p: any) => {
+        const merged = mergeRawRow(p);
+        if (Array.isArray(merged.songs)) {
+          merged.songs.forEach((s: any) => embeddedSongs.push(s));
+        }
+      });
+
       const [mainRows, zRows] = await Promise.all([
         db.select().from(songs).where(
           sql`lower(replace(replace(${songs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${songs.zoneId}) = ${cleanZone} OR lower(${songs.zoneId}) = ${withHyphen} OR lower(replace(replace(${songs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${songs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${songs.rawData}->>'zone_id', '-', ''), ' ', '')) = ${withoutHyphen}`
@@ -97,7 +115,15 @@ const getSongsHandler = async (req: any, res: any) => {
           sql`lower(replace(replace(${zoneSongs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${zoneSongs.zoneId}) = ${cleanZone} OR lower(${zoneSongs.zoneId}) = ${withHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zone_id', '-', ''), ' ', '')) = ${withoutHyphen}`
         ),
       ]);
-      rows = [...mainRows, ...zRows.map(mergeRawRow)].sort((a, b) =>
+
+      const allMerged = [...mainRows, ...zRows.map(mergeRawRow), ...embeddedSongs];
+      const seen = new Set<string>();
+      rows = allMerged.filter((s: any) => {
+        const key = String(s.id || s.title || '');
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).sort((a, b) =>
         String(a.title || '').localeCompare(String(b.title || ''))
       );
     } else {
