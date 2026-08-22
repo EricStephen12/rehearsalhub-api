@@ -30,6 +30,7 @@ function shapeSubmission(r: any) {
   const submittedByEmail = (m.submittedByEmail as string) || (raw.submittedByEmail as string) || (raw.submitted_by_email as string) || (raw.userEmail as string) || (raw.user_email as string) || (r.submittedByEmail as string) || '';
   const status = (m.status as string) || (r.status as string) || 'pending';
   const createdAt = r.createdAt || raw.createdAt || raw.created_at || new Date().toISOString();
+  const conversation = Array.isArray(m.conversation) ? m.conversation : (Array.isArray(raw.conversation) ? raw.conversation : []);
 
   return {
     ...m,
@@ -52,6 +53,7 @@ function shapeSubmission(r: any) {
     submittedBy,
     submittedByEmail,
     status,
+    conversation,
     createdAt,
     rawData: raw,
   };
@@ -270,12 +272,16 @@ router.delete('/:id', requireAuth, async (req: any, res) => {
   }
 });
 
-/** POST /submitted-songs/:id/reply */
+/** POST /submitted-songs/:id/reply — Post comment/reply */
 router.post('/:id/reply', requireAuth, async (req: any, res) => {
   try {
     const { id } = req.params;
-    const { message, senderName } = req.body;
+    const { message, senderName, replyTo } = req.body;
     const auth = res.locals.auth;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, error: 'Message cannot be empty' });
+    }
 
     const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
     if (!existing) return res.status(404).json({ success: false, error: 'Not found' });
@@ -285,10 +291,17 @@ router.post('/:id/reply', requireAuth, async (req: any, res) => {
     
     const isUserSender = existing.userId === auth.userId;
     const newMessage = {
-      id: `msg-${Date.now()}`,
+      id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       sender: isUserSender ? 'user' : 'admin',
-      senderName: senderName || auth.email || (isUserSender ? 'Singer' : 'Admin'),
-      message: message?.trim() || '',
+      senderId: auth.userId,
+      senderName: senderName || auth.email || (isUserSender ? 'Singer' : 'Admin Reviewer'),
+      message: message.trim(),
+      replyTo: replyTo && typeof replyTo === 'object' ? {
+        id: replyTo.id,
+        text: String(replyTo.text || '').substring(0, 120),
+        senderName: replyTo.senderName || 'Unknown',
+      } : null,
+      reactions: {},
       timestamp: new Date().toISOString(),
     };
 
@@ -297,15 +310,131 @@ router.post('/:id/reply', requireAuth, async (req: any, res) => {
     const updatedRaw = {
       ...raw,
       conversation,
-      ...(isUserSender ? { userReply: message?.trim() } : { replyMessage: message?.trim() }),
+      ...(isUserSender ? { userReply: message.trim() } : { replyMessage: message.trim() }),
+      lastActivityAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
-    res.json({ success: true, message: 'Reply sent successfully', data: conversation });
+    res.json({ success: true, message: 'Message sent successfully', data: conversation, newMessage });
   } catch (err) {
     console.error('[submitted-songs:reply]', err);
     res.status(500).json({ success: false, error: 'Failed to post reply' });
+  }
+});
+
+/** PATCH /submitted-songs/:id/conversation/:messageId — Edit message */
+router.patch('/:id/conversation/:messageId', requireAuth, async (req: any, res) => {
+  try {
+    const { id, messageId } = req.params;
+    const { message } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, error: 'Updated message cannot be empty' });
+    }
+
+    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
+
+    const raw = (existing.rawData as Record<string, any>) || {};
+    const conversation = Array.isArray(raw.conversation) ? [...raw.conversation] : [];
+
+    const msgIdx = conversation.findIndex((m: any) => m.id === messageId);
+    if (msgIdx === -1) {
+      return res.status(404).json({ success: false, error: 'Message not found' });
+    }
+
+    conversation[msgIdx] = {
+      ...conversation[msgIdx],
+      message: message.trim(),
+      isEdited: true,
+      editedAt: new Date().toISOString(),
+    };
+
+    const updatedRaw = {
+      ...raw,
+      conversation,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    res.json({ success: true, message: 'Message updated', data: conversation });
+  } catch (err) {
+    console.error('[submitted-songs:edit-message]', err);
+    res.status(500).json({ success: false, error: 'Failed to edit message' });
+  }
+});
+
+/** DELETE /submitted-songs/:id/conversation/:messageId — Delete message */
+router.delete('/:id/conversation/:messageId', requireAuth, async (req: any, res) => {
+  try {
+    const { id, messageId } = req.params;
+
+    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
+
+    const raw = (existing.rawData as Record<string, any>) || {};
+    const conversation = (Array.isArray(raw.conversation) ? raw.conversation : []).filter(
+      (m: any) => m.id !== messageId
+    );
+
+    const updatedRaw = {
+      ...raw,
+      conversation,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    res.json({ success: true, message: 'Message deleted', data: conversation });
+  } catch (err) {
+    console.error('[submitted-songs:delete-message]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete message' });
+  }
+});
+
+/** POST /submitted-songs/:id/conversation/:messageId/react — Toggle emoji reaction */
+router.post('/:id/conversation/:messageId/react', requireAuth, async (req: any, res) => {
+  try {
+    const { id, messageId } = req.params;
+    const { emoji } = req.body;
+    const auth = res.locals.auth;
+
+    if (!emoji) return res.status(400).json({ success: false, error: 'Emoji is required' });
+
+    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
+
+    const raw = (existing.rawData as Record<string, any>) || {};
+    const conversation = Array.isArray(raw.conversation) ? [...raw.conversation] : [];
+
+    const msgIdx = conversation.findIndex((m: any) => m.id === messageId);
+    if (msgIdx === -1) return res.status(404).json({ success: false, error: 'Message not found' });
+
+    const msg = conversation[msgIdx];
+    const reactions = { ...(msg.reactions || {}) };
+    const currentUsers: string[] = Array.isArray(reactions[emoji]) ? [...reactions[emoji]] : [];
+
+    const userIdentifier = auth.userId || auth.email || 'user';
+    if (currentUsers.includes(userIdentifier)) {
+      reactions[emoji] = currentUsers.filter((u: string) => u !== userIdentifier);
+      if (reactions[emoji].length === 0) delete reactions[emoji];
+    } else {
+      reactions[emoji] = [...currentUsers, userIdentifier];
+    }
+
+    conversation[msgIdx] = { ...msg, reactions };
+
+    const updatedRaw = {
+      ...raw,
+      conversation,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    res.json({ success: true, data: conversation });
+  } catch (err) {
+    console.error('[submitted-songs:react]', err);
+    res.status(500).json({ success: false, error: 'Failed to react' });
   }
 });
 
