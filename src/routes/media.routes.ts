@@ -149,15 +149,19 @@ router.get('/', async (req, res) => {
       const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
 
       data = data.filter((item) => {
+        // Strictly exclude items marked for HQ only
+        if (item.forHq || (item as any).isHqOnly) return false;
+
         const itemZone = (item.zoneId || '').toLowerCase();
         const itemWithoutHyphen = itemZone.replace(/-/g, '');
+
+        // Match this specific zone or public global media
         return (
-          !item.zoneId ||
-          itemZone === 'global' ||
-          itemZone === '' ||
           itemZone === target ||
           itemZone === withHyphen ||
-          itemWithoutHyphen === withoutHyphen
+          itemWithoutHyphen === withoutHyphen ||
+          (!item.zoneId && !item.forHq) ||
+          itemZone === 'global'
         );
       });
     }

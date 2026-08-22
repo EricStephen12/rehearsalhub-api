@@ -35,12 +35,21 @@ function shapeSchedule(row: any) {
 }
 
 /** GET /schedule (and /schedule/programs) — List programs */
-router.get(['/', '/programs'], requireAuth, async (_req, res) => {
+router.get(['/', '/programs'], requireAuth, async (req, res) => {
   try {
+    const { zoneId } = req.query;
     const rows = await db.select().from(schedulePrograms);
-    const data = rows
-      .map(shapeSchedule)
-      .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    let data = rows.map(shapeSchedule);
+
+    if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
+      const target = String(zoneId).toLowerCase();
+      data = data.filter((p: any) => {
+        const pZone = String(p.zoneId || p.rawData?.zoneId || p.rawData?.zone_id || '').toLowerCase();
+        return !pZone || pZone === 'global' || pZone === target;
+      });
+    }
+
+    data.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
     res.json({ success: true, count: data.length, data });
   } catch (err) {
     console.error('[schedule:get]', err);
@@ -74,6 +83,7 @@ router.post('/', requireAuth, async (req: any, res) => {
     const now = new Date();
     const name = req.body.name?.trim() || 'New Schedule Program';
     const date = req.body.date || now.toLocaleDateString('en-CA');
+    const zoneId = req.body.zoneId || 'global';
 
     const defaultWeeks = [{ id: 'week_1', name: 'Week 1' }];
     const defaultDays = [{ id: 'day_1', weekId: 'week_1', name: 'Day 1' }];
@@ -82,19 +92,18 @@ router.post('/', requireAuth, async (req: any, res) => {
       id,
       name,
       date,
+      zoneId,
       weeks: req.body.weeks || defaultWeeks,
       days: req.body.days || defaultDays,
-      currentWeekId: req.body.currentWeekId || 'week_1',
-      currentDayId: req.body.currentDayId || 'day_1',
-      scheduleSongs: req.body.scheduleSongs || [],
+      dailySchedules: req.body.dailySchedules || [],
       newSongs: req.body.newSongs || [],
-      carriedOverSongs: req.body.carriedOverSongs || [],
-      swappedSongs: req.body.swappedSongs || [],
-      renamedSongs: req.body.renamedSongs || [],
+      carriedOver: req.body.carriedOver || [],
+      swapped: req.body.swapped || [],
+      nameChanges: req.body.nameChanges || [],
       invalidSongs: req.body.invalidSongs || [],
-      eligibilityList: req.body.eligibilityList || [],
       isArchived: false,
-      createdBy: res.locals.auth.userId,
+      isCurrent: false,
+      createdBy: res.locals.auth?.userId || null,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     };
