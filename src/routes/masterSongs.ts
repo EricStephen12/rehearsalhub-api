@@ -7,8 +7,14 @@ import { mergeRawRow } from '../lib/rawRow';
 const router = Router();
 
 // GET /master & /api/master-songs (Ministered Songs Catalog)
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
+    const { zoneId } = req.query;
+    // Master ministered songs are the Global HQ catalog. If queried for a specific regional zone, return empty or zone-specific if any.
+    if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
+      return res.json({ success: true, count: 0, data: [] });
+    }
+
     const rows = await db
       .select()
       .from(ministeredSongs)

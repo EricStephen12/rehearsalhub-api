@@ -12,23 +12,41 @@ function shapeSchedule(row: any) {
   const merged = mergeRawRow(row);
   const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
 
+  const dailySchedules = Array.isArray(raw.dailySchedules) ? raw.dailySchedules : (Array.isArray(raw.scheduleSongs) ? raw.scheduleSongs : []);
+  const carriedOver = Array.isArray(raw.carriedOver) ? raw.carriedOver : (Array.isArray(raw.carriedOverSongs) ? raw.carriedOverSongs : []);
+  const swapped = Array.isArray(raw.swapped) ? raw.swapped : (Array.isArray(raw.swappedSongs) ? raw.swappedSongs : []);
+  const nameChanges = Array.isArray(raw.nameChanges) ? raw.nameChanges : (Array.isArray(raw.renamedSongs) ? raw.renamedSongs : []);
+  const submitters = Array.isArray(raw.submitters) ? raw.submitters : (Array.isArray(raw.eligibilityList) ? raw.eligibilityList : []);
+  const newSongs = Array.isArray(raw.newSongs) ? raw.newSongs : [];
+  const invalidSongs = Array.isArray(raw.invalidSongs) ? raw.invalidSongs : [];
+
+  const defaultWeeks = Array.isArray(raw.weeks) && raw.weeks.length > 0 ? raw.weeks : [{ id: 'week_1', name: 'Week 1' }];
+  const defaultDays = Array.isArray(raw.days) && raw.days.length > 0 ? raw.days : [{ id: 'day_1', weekId: defaultWeeks[0]?.id || 'week_1', name: 'Day 1' }];
+
   return {
     ...merged,
     id: String(row.id),
     name: row.name || raw.name || raw.programName || 'Schedule Program',
     date: row.date || raw.date || new Date().toLocaleDateString('en-CA'),
     isArchived: Boolean(raw.isArchived || raw.is_archived),
-    weeks: Array.isArray(raw.weeks) ? raw.weeks : [{ id: 'default_week_1', name: 'Week 1' }],
-    days: Array.isArray(raw.days) ? raw.days : [{ id: 'default_day_1', weekId: 'default_week_1', name: 'Day 1' }],
-    currentWeekId: raw.currentWeekId || 'default_week_1',
-    currentDayId: raw.currentDayId || 'default_day_1',
-    scheduleSongs: Array.isArray(raw.scheduleSongs) ? raw.scheduleSongs : [],
-    newSongs: Array.isArray(raw.newSongs) ? raw.newSongs : [],
-    carriedOverSongs: Array.isArray(raw.carriedOverSongs) ? raw.carriedOverSongs : [],
-    swappedSongs: Array.isArray(raw.swappedSongs) ? raw.swappedSongs : [],
-    renamedSongs: Array.isArray(raw.renamedSongs) ? raw.renamedSongs : [],
-    invalidSongs: Array.isArray(raw.invalidSongs) ? raw.invalidSongs : [],
-    eligibilityList: Array.isArray(raw.eligibilityList) ? raw.eligibilityList : [],
+    isCurrent: Boolean(raw.isCurrent || raw.is_current),
+    zoneId: raw.zoneId || row.zoneId || 'global',
+    weeks: defaultWeeks,
+    days: defaultDays,
+    currentWeekId: raw.currentWeekId || defaultWeeks[0]?.id || 'week_1',
+    currentDayId: raw.currentDayId || defaultDays[0]?.id || 'day_1',
+    dailySchedules,
+    scheduleSongs: dailySchedules,
+    newSongs,
+    carriedOver,
+    carriedOverSongs: carriedOver,
+    swapped,
+    swappedSongs: swapped,
+    nameChanges,
+    renamedSongs: nameChanges,
+    invalidSongs,
+    submitters,
+    eligibilityList: submitters,
     createdAt: row.createdAt || raw.createdAt || new Date().toISOString(),
     rawData: raw,
   };

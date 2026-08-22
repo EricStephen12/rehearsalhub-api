@@ -84,17 +84,17 @@ const getSongsHandler = async (req: any, res: any) => {
           }
         }
       }
-    } else if (zoneId) {
-      const cleanZone = (zoneId as string).toLowerCase();
-      const withoutHyphen = cleanZone.replace(/-/g, '');
+    } else if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
+      const cleanZone = (zoneId as string).toLowerCase().trim();
+      const withoutHyphen = cleanZone.replace(/[\s-_]/g, '');
       const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
 
       const [mainRows, zRows] = await Promise.all([
         db.select().from(songs).where(
-          sql`lower(replace(${songs.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${songs.zoneId}) = ${withHyphen} OR lower(replace(${songs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${songs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
+          sql`lower(replace(replace(${songs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${songs.zoneId}) = ${cleanZone} OR lower(${songs.zoneId}) = ${withHyphen} OR lower(replace(replace(${songs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${songs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${songs.rawData}->>'zone_id', '-', ''), ' ', '')) = ${withoutHyphen}`
         ),
         db.select().from(zoneSongs).where(
-          sql`lower(replace(${zoneSongs.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${zoneSongs.zoneId}) = ${withHyphen} OR lower(replace(${zoneSongs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR lower(replace(${zoneSongs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen}`
+          sql`lower(replace(replace(${zoneSongs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${zoneSongs.zoneId}) = ${cleanZone} OR lower(${zoneSongs.zoneId}) = ${withHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zone_id', '-', ''), ' ', '')) = ${withoutHyphen}`
         ),
       ]);
       rows = [...mainRows, ...zRows.map(mergeRawRow)].sort((a, b) =>
