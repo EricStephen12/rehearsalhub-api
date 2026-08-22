@@ -476,4 +476,46 @@ router.post('/send', requireAuth, async (req, res) => {
   }
 });
 
+/** DELETE /notifications/:id — soft-delete (remove from user's view) */
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const { id } = req.params;
+
+    // Mark as read AND store a dismiss receipt so it doesn't reappear
+    const receiptId = `${userId}_${id}`;
+    const existingReceipt = await db
+      .select({ id: userNotifications.id })
+      .from(userNotifications)
+      .where(eq(userNotifications.id, receiptId))
+      .limit(1);
+
+    if (existingReceipt.length === 0) {
+      await db.insert(userNotifications).values({
+        id: receiptId,
+        rawData: {
+          user_id: userId,
+          notification_id: id,
+          read_at: new Date().toISOString(),
+          dismissed: true,
+        },
+      });
+    } else {
+      await db.update(userNotifications).set({
+        rawData: {
+          user_id: userId,
+          notification_id: id,
+          read_at: new Date().toISOString(),
+          dismissed: true,
+        },
+      }).where(eq(userNotifications.id, receiptId));
+    }
+
+    res.json({ success: true, message: 'Notification dismissed' });
+  } catch (err) {
+    console.error('[notifications/:id DELETE]', err);
+    res.status(500).json({ success: false, error: 'Failed to dismiss notification' });
+  }
+});
+
 export default router;
