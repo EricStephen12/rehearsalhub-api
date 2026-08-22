@@ -250,6 +250,58 @@ router.post('/manual', requireAuth, async (req: any, res) => {
   }
 });
 
+/** PATCH /attendance/:id — Admin update attendance record */
+router.patch('/:id', requireAuth, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { eventName, event_name, status, userName, user_name, checkInTime, check_in_time, checkOutTime, check_out_time, isArchived, is_archived } = req.body;
+
+    const [existing] = await db.select().from(attendance).where(eq(attendance.id, id)).limit(1);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Attendance record not found' });
+    }
+
+    const raw = (existing.rawData as Record<string, any>) || {};
+    const updatedEvent = eventName || event_name || raw.eventName || existing.eventName;
+    const updatedUser = userName || user_name || raw.userName || existing.userName;
+    const updatedStatus = status !== undefined ? status : (raw.status || existing.status);
+    const updatedCheckIn = checkInTime || check_in_time || raw.checkInTime || existing.checkInTime;
+    const updatedCheckOut = checkOutTime !== undefined ? checkOutTime : (check_out_time !== undefined ? check_out_time : (raw.checkOutTime || null));
+    const updatedArchived = isArchived !== undefined ? isArchived : (is_archived !== undefined ? is_archived : raw.isArchived);
+
+    const updatedRaw = {
+      ...raw,
+      eventName: updatedEvent,
+      event_name: updatedEvent,
+      userName: updatedUser,
+      user_name: updatedUser,
+      status: updatedStatus,
+      checkInTime: updatedCheckIn,
+      check_in_time: updatedCheckIn,
+      checkOutTime: updatedCheckOut,
+      check_out_time: updatedCheckOut,
+      isArchived: updatedArchived,
+      is_archived: updatedArchived,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const [updated] = await db.update(attendance)
+      .set({
+        eventName: updatedEvent,
+        userName: updatedUser,
+        status: updatedStatus,
+        rawData: updatedRaw,
+      })
+      .where(eq(attendance.id, id))
+      .returning();
+
+    res.json({ success: true, message: 'Attendance record updated', data: shapeAttendance(updated) });
+  } catch (err) {
+    console.error('[attendance:patch]', err);
+    res.status(500).json({ success: false, error: 'Failed to update attendance record' });
+  }
+});
+
 /** DELETE /attendance/:id — Admin delete record */
 router.delete('/:id', requireAuth, async (req: any, res) => {
   try {
@@ -263,3 +315,4 @@ router.delete('/:id', requireAuth, async (req: any, res) => {
 });
 
 export default router;
+
