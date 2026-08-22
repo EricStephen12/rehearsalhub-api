@@ -18,10 +18,23 @@ let wss: WebSocketServer | null = null;
 
 // ── Broadcast an event to all subscribers of a resource ──────────────────────
 export function broadcast(resource: string, id: string, data: unknown): void {
-  const key: SubscriptionKey = `${resource}:${id}`;
+  const specificKey: SubscriptionKey = `${resource}:${id}`;
+  const allKey: SubscriptionKey = `${resource}:all`;
 
   for (const [connId, subs] of subscriptions) {
-    if (!subs.has(key)) continue;
+    let matches = subs.has(specificKey) || subs.has(allKey);
+    
+    // If the broadcast is to "all", match any subscriber of this resource
+    if (!matches && id === 'all') {
+      for (const sub of subs) {
+        if (sub.startsWith(`${resource}:`)) {
+          matches = true;
+          break;
+        }
+      }
+    }
+
+    if (!matches) continue;
     const socket = connections.get(connId);
     if (!socket || socket.readyState !== WebSocket.OPEN) continue;
 
