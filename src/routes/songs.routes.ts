@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, or, asc, sql } from 'drizzle-orm';
+import { eq, or, asc, desc, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   ministeredSongs,
@@ -10,6 +10,7 @@ import {
   subgroupPraiseNights,
   programs,
   zonePrograms,
+  songHistory,
 } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
@@ -267,28 +268,100 @@ router.get('/history', requireAuth, async (req, res) => {
       return;
     }
 
-    // Try finding the song in any of the song tables
-    const tables = [songs, ministeredSongs, zoneSongs, subgroupSongs];
-    for (const t of tables) {
-      const [song] = await db.select().from(t).where(eq(t.id, songId)).limit(1);
-      if (song) {
-        let history = (song as any).rawData?.history || (song as any).raw_data?.history;
-        if (typeof history === 'string') {
-          try {
-            history = JSON.parse(history);
-          } catch {
-            history = [];
+    // 1. Fetch from song_history table
+    const rows = await db.select().from(songHistory).where(
+      sql`${songHistory.songId} = ${songId} OR ${songHistory.rawData}->>'songId' = ${songId} OR ${songHistory.rawData}->>'song_id' = ${songId}`
+    ).orderBy(desc(songHistory.createdAt));
+
+    const merged = rows.map(mergeRawRow);
+
+    // 2. Also check if the song has an embedded history array in rawData
+    if (merged.length === 0) {
+      const tables = [songs, ministeredSongs, zoneSongs, subgroupSongs];
+      for (const t of tables) {
+        const [song] = await db.select().from(t).where(eq(t.id, songId)).limit(1);
+        if (song) {
+          let history = (song as any).rawData?.history || (song as any).raw_data?.history;
+          if (typeof history === 'string') {
+            try {
+              history = JSON.parse(history);
+            } catch {
+              history = [];
+            }
+          }
+          if (Array.isArray(history) && history.length > 0) {
+            res.json({ success: true, count: history.length, data: history });
+            return;
           }
         }
-        res.json({ success: true, data: Array.isArray(history) ? history : [] });
-        return;
       }
     }
-    
-    // Not found
-    res.json({ success: true, data: [] });
+
+    res.json({ success: true, count: merged.length, data: merged });
   } catch (err) {
     console.error('[songs/history]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** POST /songs/history */
+router.post('/history', requireAuth, async (req: any, res: any) => {
+  try {
+    const body = req.body || {};
+    const { songId, type, title, new_value, old_value, description } = body;
+    if (!songId) {
+      res.status(400).json({ success: false, error: 'Missing songId' });
+      return;
+    }
+
+    const id = body.id || `hist_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const createdBy = body.created_by || req.user?.displayName || req.user?.email || 'Admin';
+    const now = new Date();
+
+    const row = {
+      id,
+      songId,
+      type: type || 'metadata',
+      title: title || 'Song Update',
+      newValue: typeof new_value === 'object' ? JSON.stringify(new_value) : String(new_value || ''),
+      oldValue: typeof old_value === 'object' ? JSON.stringify(old_value) : String(old_value || ''),
+      description: description || 'Song changes updated',
+      createdBy,
+      createdAt: now,
+      rawData: {
+        ...body,
+        id,
+        songId,
+        type,
+        title,
+        new_value,
+        old_value,
+        description,
+        created_by: createdBy,
+        created_at: now.toISOString(),
+      },
+    };
+
+    await db.insert(songHistory).values(row);
+    res.json({ success: true, data: mergeRawRow(row) });
+  } catch (err) {
+    console.error('[songs/history POST]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** DELETE /songs/history/:id */
+router.delete('/history/:id', requireAuth, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      res.status(400).json({ success: false, error: 'Missing history id' });
+      return;
+    }
+    await db.delete(songHistory).where(eq(songHistory.id, id));
+    res.json({ success: true, message: 'History entry deleted' });
+  } catch (err) {
+    console.error('[songs/history DELETE]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
 });
