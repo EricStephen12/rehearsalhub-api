@@ -14,6 +14,7 @@ import {
 } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
+import { broadcast } from '../ws/wsServer';
 
 const router = Router();
 
@@ -418,6 +419,13 @@ const createSongHandler = async (req: any, res: any) => {
       set: songRow,
     });
 
+    const mergedCreated = mergeRawRow(songRow);
+    broadcast('song', songId, mergedCreated);
+    broadcast('song', 'all', mergedCreated);
+    if (praiseNightId) {
+      broadcast('songs', praiseNightId, mergedCreated);
+    }
+
     res.status(201).json({ success: true, message: 'Song created successfully', data: songRow });
   } catch (err) {
     console.error('[songs/create]', err);
@@ -474,7 +482,15 @@ const updateSongHandler = async (req: any, res: any) => {
       await db.update(zoneSongs).set(updateFields).where(eq(zoneSongs.id, songId));
     }
 
-    res.json({ success: true, message: 'Song updated successfully', data: { id: songId, ...updateFields } });
+    const mergedSong = mergeRawRow({ ...(existing || zExisting), ...updateFields, rawData: updatedRaw });
+    broadcast('song', songId, mergedSong);
+    broadcast('song', 'all', mergedSong);
+    const pId = updateFields.praiseNightId || existing?.praiseNightId || (zExisting?.rawData as any)?.praiseNightId;
+    if (pId) {
+      broadcast('songs', String(pId), mergedSong);
+    }
+
+    res.json({ success: true, message: 'Song updated successfully', data: { id: songId, ...updateFields, ...mergedSong } });
   } catch (err) {
     console.error('[songs/update]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
@@ -499,6 +515,9 @@ const toggleStatusHandler = async (req: any, res: any) => {
       db.update(songs).set({ status, updatedAt: new Date() }).where(eq(songs.id, songId)),
       db.update(zoneSongs).set({ status }).where(eq(zoneSongs.id, songId)),
     ]);
+
+    broadcast('song', songId, { id: songId, status });
+    broadcast('song', 'all', { id: songId, status });
 
     res.json({ success: true, message: `Song status updated to ${status}` });
   } catch (err) {
@@ -527,6 +546,9 @@ const toggleActiveHandler = async (req: any, res: any) => {
       .set({ isActive: Boolean(isActive), updatedAt: new Date() })
       .where(eq(songs.id, songId));
 
+    broadcast('song', songId, { id: songId, isActive: Boolean(isActive) });
+    broadcast('song', 'all', { id: songId, isActive: Boolean(isActive) });
+
     res.json({ success: true, message: `Song active state set to ${Boolean(isActive)}` });
   } catch (err) {
     console.error('[songs/:id/active]', err);
@@ -547,6 +569,9 @@ const deleteSongHandler = async (req: any, res: any) => {
       db.delete(zoneSongs).where(eq(zoneSongs.id, songId)),
       db.delete(subgroupSongs).where(eq(subgroupSongs.id, songId)),
     ]);
+
+    broadcast('song', songId, { id: songId, deleted: true });
+    broadcast('song', 'all', { id: songId, deleted: true });
 
     res.json({ success: true, message: 'Song deleted successfully' });
   } catch (err) {
@@ -813,10 +838,14 @@ router.patch('/:id/lyrics', requireAuth, async (req: any, res: any) => {
       return;
     }
 
+    const lyricsData = { id, karaokeLrcText, syncedLyrics, lyrics };
+    broadcast('song', id, lyricsData);
+    broadcast('song', 'all', lyricsData);
+
     res.json({
       success: true,
       message: 'Lyrics saved successfully',
-      data: { id, karaokeLrcText, syncedLyrics, lyrics },
+      data: lyricsData,
     });
   } catch (err) {
     console.error('[songs/:id/lyrics:PATCH]', err);
