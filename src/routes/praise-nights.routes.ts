@@ -418,21 +418,56 @@ router.post('/:id/copy-songs', requireAuth, async (req, res) => {
   }
 });
 
+// Helper to find a program across programs and zonePrograms tables
+async function findProgramRow(programId: string) {
+  if (!programId) return null;
+  const decoded = decodeURIComponent(programId).trim();
+  
+  // 1. Check programs table
+  const progs = await db.select().from(programs).where(
+    or(
+      eq(programs.id, programId),
+      eq(programs.id, decoded),
+      sql`lower(${programs.id}) = lower(${decoded})`,
+      sql`${programs.rawData}->>'firebaseId' = ${decoded}`,
+      sql`${programs.rawData}->>'id' = ${decoded}`,
+      sql`lower(${programs.name}) = lower(${decoded})`
+    )
+  ).limit(1);
+
+  if (progs.length > 0) return { row: progs[0], table: 'programs' as const };
+
+  // 2. Check zonePrograms table
+  const zProgs = await db.select().from(zonePrograms).where(
+    or(
+      eq(zonePrograms.id, programId),
+      eq(zonePrograms.id, decoded),
+      sql`lower(${zonePrograms.id}) = lower(${decoded})`,
+      sql`${zonePrograms.rawData}->>'firebaseId' = ${decoded}`,
+      sql`${zonePrograms.rawData}->>'id' = ${decoded}`,
+      sql`lower(${zonePrograms.name}) = lower(${decoded})`
+    )
+  ).limit(1);
+
+  if (zProgs.length > 0) return { row: zProgs[0], table: 'zonePrograms' as const };
+
+  return null;
+}
+
 // PATCH /programs/:id — Update program metadata
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const programId = req.params.id;
     const body = req.body || {};
 
-    const [prog] = await db.select().from(programs).where(eq(programs.id, programId)).limit(1);
-    const [zProg] = !prog ? await db.select().from(zonePrograms).where(eq(zonePrograms.id, programId)).limit(1) : [null];
-    const existing = prog || zProg;
+    const found = await findProgramRow(programId);
 
-    if (!existing) {
+    if (!found) {
       res.status(404).json({ success: false, error: 'Program not found' });
       return;
     }
 
+    const existing = found.row;
     const prevRaw = (existing.rawData && typeof existing.rawData === 'object' && !Array.isArray(existing.rawData))
       ? (existing.rawData as Record<string, unknown>)
       : {};
@@ -467,11 +502,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (body.songIds !== undefined) updateFields.songIds = body.songIds;
 
     let updatedRow: any = null;
-    if (prog) {
-      const [u] = await db.update(programs).set(updateFields).where(eq(programs.id, programId)).returning();
+    if (found.table === 'programs') {
+      const [u] = await db.update(programs).set(updateFields).where(eq(programs.id, existing.id)).returning();
       updatedRow = u;
     } else {
-      const [u] = await db.update(zonePrograms).set(updateFields).where(eq(zonePrograms.id, programId)).returning();
+      const [u] = await db.update(zonePrograms).set(updateFields).where(eq(zonePrograms.id, existing.id)).returning();
       updatedRow = u;
     }
 
@@ -486,11 +521,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const programId = req.params.id;
+    const found = await findProgramRow(programId);
 
-    await Promise.all([
-      db.delete(programs).where(eq(programs.id, programId)),
-      db.delete(zonePrograms).where(eq(zonePrograms.id, programId)),
-    ]);
+    if (found) {
+      if (found.table === 'programs') {
+        await db.delete(programs).where(eq(programs.id, found.row.id));
+      } else {
+        await db.delete(zonePrograms).where(eq(zonePrograms.id, found.row.id));
+      }
+    } else {
+      await Promise.all([
+        db.delete(programs).where(eq(programs.id, programId)),
+        db.delete(zonePrograms).where(eq(zonePrograms.id, programId)),
+      ]);
+    }
 
     res.json({ success: true, message: 'Program deleted successfully' });
   } catch (err) {
