@@ -52,20 +52,149 @@ router.get('/', requireAuth, async (req, res) => {
     const userId = auth.userId as string;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
 
-    let rows: any[] = [];
+    const allRows = await db.select().from(chats).limit(500);
+
+    let rows: (typeof chats.$inferSelect)[] = [];
     if (isHqAdmin) {
-      rows = await db.select().from(chats).limit(100);
+      rows = allRows;
     } else {
-      rows = await db
-        .select()
-        .from(chats)
-        .where(sql`${chats.participants}::jsonb ? ${userId}`);
+      rows = allRows.filter((r) => {
+        const raw = (r.rawData && typeof r.rawData === 'object') ? (r.rawData as Record<string, any>) : {};
+        const participants = Array.isArray(r.participants)
+          ? r.participants
+          : Array.isArray(raw.participants)
+            ? raw.participants
+            : Array.isArray(raw.memberIds)
+              ? raw.memberIds
+              : typeof r.participants === 'object' && r.participants !== null
+                ? Object.keys(r.participants)
+                : typeof raw.participants === 'object' && raw.participants !== null
+                  ? Object.keys(raw.participants)
+                  : [];
+        return (
+          participants.map(String).includes(userId) ||
+          r.createdBy === userId ||
+          raw.createdBy === userId ||
+          raw.created_by === userId
+        );
+      });
     }
 
     res.json({ success: true, count: rows.length, data: rows.map(shapeChat) });
   } catch (err) {
     console.error('[chats/]', err);
     res.status(500).json({ success: false, error: 'Failed to load chats' });
+  }
+});
+
+// GET /chats/:chatId
+router.get('/:chatId', requireAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const [row] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!row) {
+      res.status(404).json({ success: false, error: 'Chat not found' });
+      return;
+    }
+    res.json({ success: true, data: shapeChat(row) });
+  } catch (err) {
+    console.error('[chats/:id]', err);
+    res.status(500).json({ success: false, error: 'Failed to load chat' });
+  }
+});
+
+// POST /chats — Create new chat
+router.post('/', requireAuth, async (req, res) => {
+  try {
+    const auth = res.locals.auth;
+    const { name, type = 'direct', member_ids = [], participants: inputParticipants, zone_id } = req.body;
+
+    const rawList = Array.isArray(member_ids) && member_ids.length > 0
+      ? member_ids
+      : Array.isArray(inputParticipants)
+        ? inputParticipants
+        : [];
+
+    const participants = rawList.includes(auth.userId)
+      ? rawList
+      : [...rawList, auth.userId];
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const rawData = {
+      id,
+      name,
+      type,
+      zoneId: zone_id,
+      participants,
+      createdBy: auth.userId,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const [chat] = await db.insert(chats).values({
+      id,
+      type,
+      createdBy: auth.userId,
+      participants,
+      participantDetails: {},
+      unreadCount: {},
+      rawData,
+    }).returning();
+
+    broadcast('chat', chat.id, shapeChat(chat));
+    res.status(201).json({ success: true, data: shapeChat(chat) });
+  } catch (err) {
+    console.error('[chats:post]', err);
+    res.status(500).json({ success: false, error: 'Failed to create chat' });
+  }
+});
+
+// PATCH /chats/:chatId
+router.patch('/:chatId', requireAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const [existing] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Chat not found' });
+      return;
+    }
+
+    const prevRaw = (existing.rawData && typeof existing.rawData === 'object')
+      ? (existing.rawData as Record<string, any>)
+      : {};
+
+    const { name, last_message, lastMessage, last_message_at, member_ids, participants } = req.body;
+
+    const nextParticipants = Array.isArray(member_ids)
+      ? member_ids
+      : Array.isArray(participants)
+        ? participants
+        : existing.participants;
+
+    const nextRaw = {
+      ...prevRaw,
+      ...(name !== undefined ? { name } : {}),
+      ...(last_message !== undefined || lastMessage !== undefined ? { lastMessage: last_message || lastMessage } : {}),
+      ...(last_message_at !== undefined ? { lastTimestamp: last_message_at } : {}),
+      ...(nextParticipants ? { participants: nextParticipants } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const [updated] = await db.update(chats)
+      .set({
+        ...(nextParticipants ? { participants: nextParticipants } : {}),
+        rawData: nextRaw,
+      })
+      .where(eq(chats.id, chatId))
+      .returning();
+
+    broadcast('chat', chatId, shapeChat(updated));
+    res.json({ success: true, data: shapeChat(updated) });
+  } catch (err) {
+    console.error('[chats:patch]', err);
+    res.status(500).json({ success: false, error: 'Failed to update chat' });
   }
 });
 
@@ -110,7 +239,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const senderName = req.body.senderName || 'Admin Support';
+    const senderName = req.body.senderName || req.body.sender_name || 'User';
     const isSenderAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
 
     const rawData = {
@@ -122,6 +251,9 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       senderType: isSenderAdmin ? 'admin' : 'user',
       timestamp: now,
       createdAt: now,
+      imageUrl: req.body.imageUrl || req.body.media_url,
+      attachment: req.body.attachment,
+      replyTo: req.body.replyTo || req.body.reply_to,
     };
 
     await db.insert(messages).values({
@@ -130,7 +262,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       senderId: auth.userId,
       senderName,
       text,
-      type: 'text',
+      type: req.body.type || 'text',
       rawData,
     });
 
