@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { eq, sql, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { subgroups, subgroupSongs, subgroupPraiseNights } from '../schema';
+import { subgroups, subgroupSongs, subgroupPraiseNights, notifications, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
@@ -167,12 +167,121 @@ router.get('/', requireAuth, async (req: any, res) => {
   }
 });
 
+/** POST /subgroups & POST /subgroups/requests — Create a new Church/Subgroup or request approval */
+const handleCreateSubgroup = async (req: any, res: any) => {
+  try {
+    const auth = res.locals.auth;
+    const userId = auth.userId as string;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const isZoneAdmin = auth.role === 'zone_admin';
+
+    const {
+      name,
+      type = 'church',
+      description = '',
+      coordinatorName = '',
+      coordinatorEmail = '',
+      coordinatorId = userId,
+      zoneId = auth.zoneId || 'global',
+      estimatedMembers = 10,
+      memberIds = [userId],
+      status: requestedStatus
+    } = req.body || {};
+
+    if (!name || !name.trim()) {
+      res.status(400).json({ success: false, error: 'Church / Group name is required' });
+      return;
+    }
+
+    // Admins can create active units directly, regular members start as pending
+    const finalStatus = (isHqAdmin || isZoneAdmin) ? (requestedStatus || 'active') : 'pending';
+    const subgroupId = `sg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    const rawData = {
+      id: subgroupId,
+      name: name.trim(),
+      type,
+      description: description.trim(),
+      coordinatorName: coordinatorName.trim() || auth.email || 'Coordinator',
+      coordinatorEmail: coordinatorEmail.trim() || auth.email || '',
+      coordinatorId: coordinatorId || userId,
+      zoneId: zoneId || 'global',
+      estimatedMembers: Number(estimatedMembers) || 10,
+      memberIds: Array.isArray(memberIds) && memberIds.length > 0 ? memberIds : [userId],
+      status: finalStatus,
+      createdBy: userId,
+      createdAt: new Date().toISOString(),
+    };
+
+    await db.insert(subgroups).values({
+      id: subgroupId,
+      name: name.trim(),
+      zoneId: zoneId || 'global',
+      description: description.trim(),
+      rawData,
+    });
+
+    // 1. Notify Admins if request is pending review
+    if (finalStatus === 'pending') {
+      const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      await db.insert(notifications).values({
+        id: notifId,
+        title: 'New Church Approval Request',
+        message: `${rawData.coordinatorName} requested to register "${name.trim()}" in ${zoneId}.`,
+        type: 'church_request',
+        targetAudience: 'hq_admin',
+        zoneId: zoneId || 'global',
+        createdAt: new Date().toISOString(),
+        rawData: {
+          subgroupId,
+          requesterId: userId,
+          type: 'church_request',
+          link: '/admin?section=Churches',
+        },
+      }).catch(err => console.error('[subgroups] Admin notif error:', err));
+
+      // 2. Notify the User that their request was received
+      const userNotifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      await db.insert(notifications).values({
+        id: userNotifId,
+        title: 'Church Request Submitted',
+        message: `Your request to register "${name.trim()}" has been received and is pending admin approval.`,
+        type: 'church_request',
+        targetUserId: userId,
+        createdAt: new Date().toISOString(),
+        rawData: {
+          subgroupId,
+          status: 'pending',
+        },
+      }).catch(err => console.error('[subgroups] User notif error:', err));
+    }
+
+    res.json({
+      success: true,
+      message: finalStatus === 'active' ? 'Church created successfully' : 'Church request submitted for review',
+      data: shapeSubgroup({
+        id: subgroupId,
+        name: name.trim(),
+        zoneId: zoneId || 'global',
+        description: description.trim(),
+        rawData,
+      } as any),
+    });
+  } catch (err: any) {
+    console.error('[subgroups/ POST]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to create church' });
+  }
+};
+
+router.post('/', requireAuth, handleCreateSubgroup);
+router.post('/requests', requireAuth, handleCreateSubgroup);
+
 router.post('/:id/approve', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
     if (!row) {
-      res.status(404).json({ success: false, error: 'Subgroup not found' });
+      res.status(404).json({ success: false, error: 'Church not found' });
       return;
     }
 
@@ -185,10 +294,25 @@ router.post('/:id/approve', requireAuth, async (req, res) => {
       rawData: raw,
     }).where(eq(subgroups.id, id));
 
-    res.json({ success: true, message: 'Subgroup approved successfully' });
+    // Send confirmation notification to the requester / coordinator
+    const targetUser = raw.coordinatorId || raw.createdBy;
+    if (targetUser) {
+      const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      await db.insert(notifications).values({
+        id: notifId,
+        title: 'Church Approved 🎉',
+        message: `Your church "${row.name || raw.name}" has been approved by admin!`,
+        type: 'church_approved',
+        targetUserId: targetUser,
+        createdAt: new Date().toISOString(),
+        rawData: { subgroupId: id, status: 'active' },
+      }).catch(err => console.error('[subgroups/approve] notif error:', err));
+    }
+
+    res.json({ success: true, message: 'Church approved successfully' });
   } catch (err: any) {
     console.error('[subgroups/:id/approve]', err);
-    res.status(500).json({ success: false, error: err?.message || 'Failed to approve subgroup' });
+    res.status(500).json({ success: false, error: err?.message || 'Failed to approve church' });
   }
 });
 
@@ -198,7 +322,7 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
     const { reason } = req.body || {};
     const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
     if (!row) {
-      res.status(404).json({ success: false, error: 'Subgroup not found' });
+      res.status(404).json({ success: false, error: 'Church not found' });
       return;
     }
 
@@ -212,10 +336,25 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
       rawData: raw,
     }).where(eq(subgroups.id, id));
 
-    res.json({ success: true, message: 'Subgroup rejected' });
+    // Send rejection notification to the requester / coordinator
+    const targetUser = raw.coordinatorId || raw.createdBy;
+    if (targetUser) {
+      const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      await db.insert(notifications).values({
+        id: notifId,
+        title: 'Church Request Update',
+        message: `Your request for "${row.name || raw.name}" was not approved: ${reason || 'Declined by admin'}`,
+        type: 'church_rejected',
+        targetUserId: targetUser,
+        createdAt: new Date().toISOString(),
+        rawData: { subgroupId: id, status: 'rejected', reason },
+      }).catch(err => console.error('[subgroups/reject] notif error:', err));
+    }
+
+    res.json({ success: true, message: 'Church request rejected' });
   } catch (err: any) {
     console.error('[subgroups/:id/reject]', err);
-    res.status(500).json({ success: false, error: err?.message || 'Failed to reject subgroup' });
+    res.status(500).json({ success: false, error: err?.message || 'Failed to reject church' });
   }
 });
 

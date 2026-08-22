@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { zoneMembers, hqMembers, profiles, adminRequests } from '../schema';
+import { zoneMembers, hqMembers, profiles, adminRequests, notifications } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 
 const router = Router();
@@ -224,13 +224,15 @@ router.post('/zone-leave', requireAuth, async (req, res) => {
   }
 });
 
-// POST /members/request-admin — User submits coordinator access request
-router.post('/request-admin', requireAuth, async (req, res) => {
+// POST /members/request-admin & POST /members/request-hq — User submits access request
+const handleAccessRequest = async (req: any, res: any) => {
   try {
     const userId = res.locals.auth.userId as string;
-    const { zoneId, zoneCode, reason, userEmail, userName } = req.body;
+    const { zoneId, zoneCode, reason, userEmail, userName, requestedRole = 'zone_admin' } = req.body;
 
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const effectiveRole = req.path.includes('hq') ? 'hq_member' : (requestedRole || 'zone_admin');
+
     await db.insert(adminRequests).values({
       id: requestId,
       userId,
@@ -238,20 +240,40 @@ router.post('/request-admin', requireAuth, async (req, res) => {
       userName: userName || null,
       zoneId: zoneId || null,
       zoneCode: zoneCode || null,
-      requestedRole: 'zone_admin',
+      requestedRole: effectiveRole,
       status: 'pending',
-      reason: reason || 'Request for Zonal Coordinator access',
+      reason: reason || (effectiveRole === 'hq_member' ? 'Request to join HQ Group' : 'Request for Zonal Coordinator access'),
       createdAt: new Date(),
       updatedAt: new Date(),
       rawData: req.body,
     });
 
-    res.json({ success: true, message: 'Admin request submitted for HQ review', data: { id: requestId } });
+    // Notify HQ Admins in-app
+    const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await db.insert(notifications).values({
+      id: notifId,
+      title: effectiveRole === 'hq_member' ? 'HQ Group Join Request' : 'New Coordinator Access Request',
+      message: `${userName || userEmail || 'A user'} submitted a request for ${effectiveRole === 'hq_member' ? 'HQ Group Access' : 'Zonal Coordinator Access'}.`,
+      type: 'admin_request',
+      targetAudience: 'hq_admin',
+      createdAt: new Date().toISOString(),
+      rawData: {
+        requestId,
+        userId,
+        requestedRole: effectiveRole,
+        link: '/admin?section=Members',
+      },
+    }).catch(err => console.error('[members/request] notif error:', err));
+
+    res.json({ success: true, message: 'Request submitted for HQ review', data: { id: requestId } });
   } catch (err: any) {
     console.error('[members/request-admin]', err);
     res.status(500).json({ success: false, error: err?.message || 'Failed to submit request' });
   }
-});
+};
+
+router.post('/request-admin', requireAuth, handleAccessRequest);
+router.post('/request-hq', requireAuth, handleAccessRequest);
 
 // GET /members/admin-requests — List admin requests for HQ
 router.get('/admin-requests', requireAuth, async (_req, res) => {
@@ -289,8 +311,30 @@ router.post('/admin-requests/:id/approve', requireAuth, async (req, res) => {
       return;
     }
 
-    // Update user profile role
-    await db.update(profiles).set({ role: 'zone_admin' }).where(eq(profiles.id, reqRow.userId));
+    const roleToGrant = reqRow.requestedRole || 'zone_admin';
+
+    if (roleToGrant === 'hq_member') {
+      // Add to hqMembers table and update profile
+      const [existingHq] = await db.select().from(hqMembers).where(sql`${hqMembers.userId} = ${reqRow.userId}`);
+      if (!existingHq) {
+        await db.insert(hqMembers).values({
+          id: `hqm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          hqGroupId: 'hq_singers',
+          userId: reqRow.userId,
+          userEmail: reqRow.userEmail,
+          userName: reqRow.userName,
+          role: 'member',
+          status: 'active',
+          createdAt: new Date(),
+          joinedAt: new Date(),
+          rawData: {},
+        });
+      }
+      await db.update(profiles).set({ hasHqAccess: true }).where(eq(profiles.id, reqRow.userId));
+    } else {
+      // Update user profile role to zone_admin
+      await db.update(profiles).set({ role: 'zone_admin' }).where(eq(profiles.id, reqRow.userId));
+    }
 
     // Update request status
     await db.update(adminRequests).set({
@@ -300,7 +344,21 @@ router.post('/admin-requests/:id/approve', requireAuth, async (req, res) => {
       updatedAt: new Date(),
     }).where(eq(adminRequests.id, req.params.id));
 
-    res.json({ success: true, message: 'Request approved and user promoted to Zone Admin' });
+    // Send confirmation notification to the user
+    const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await db.insert(notifications).values({
+      id: notifId,
+      title: 'Request Approved 🎉',
+      message: roleToGrant === 'hq_member'
+        ? 'Your request to join HQ Group has been approved! You now have access to HQ rehearsals and songs.'
+        : 'Your request for Coordinator access has been approved!',
+      type: 'request_approved',
+      targetUserId: reqRow.userId,
+      createdAt: new Date().toISOString(),
+      rawData: { requestId: req.params.id, status: 'approved' },
+    }).catch(err => console.error('[members/approve] notif error:', err));
+
+    res.json({ success: true, message: `Request approved successfully (${roleToGrant})` });
   } catch (err: any) {
     console.error('[members/admin-requests/:id/approve]', err);
     res.status(500).json({ success: false, error: err?.message || 'Failed to approve request' });
@@ -316,12 +374,30 @@ router.post('/admin-requests/:id/reject', requireAuth, async (req, res) => {
       return;
     }
 
+    const [reqRow] = await db.select().from(adminRequests).where(eq(adminRequests.id, req.params.id)).limit(1);
+    if (!reqRow) {
+      res.status(404).json({ success: false, error: 'Request not found' });
+      return;
+    }
+
     await db.update(adminRequests).set({
       status: 'rejected',
       reviewedBy: auth.userId,
       reviewedAt: new Date(),
       updatedAt: new Date(),
     }).where(eq(adminRequests.id, req.params.id));
+
+    // Send rejection notification to user
+    const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await db.insert(notifications).values({
+      id: notifId,
+      title: 'Request Status Update',
+      message: 'Your access request was not approved by HQ admin at this time.',
+      type: 'request_rejected',
+      targetUserId: reqRow.userId,
+      createdAt: new Date().toISOString(),
+      rawData: { requestId: req.params.id, status: 'rejected' },
+    }).catch(err => console.error('[members/reject] notif error:', err));
 
     res.json({ success: true, message: 'Request rejected' });
   } catch (err: any) {
