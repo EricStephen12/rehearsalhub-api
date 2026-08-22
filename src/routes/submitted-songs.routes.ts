@@ -68,20 +68,29 @@ router.get('/', requireAuth, async (req: any, res) => {
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
     const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
+    const HQ_GROUP_IDS = new Set([
+      'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
+      'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
+      'hq', 'global', 'all'
+    ]);
+
     let rows: any[] = [];
     if (mine === 'true' || auth.role === 'user' || auth.role === 'member') {
       rows = await db.select().from(submittedSongs).where(eq(submittedSongs.userId, auth.userId));
-    } else if (effectiveZoneId && effectiveZoneId !== 'all') {
-      const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
-      const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
+    } else if (effectiveZoneId && !HQ_GROUP_IDS.has(effectiveZoneId.toLowerCase().trim())) {
+      const cleanZone = effectiveZoneId.toLowerCase().trim();
+      const withoutHyphen = cleanZone.replace(/[\s-_]/g, '');
+      const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
 
       rows = await db.select().from(submittedSongs).where(
-        sql`lower(replace(${submittedSongs.zoneId}, '-', '')) = ${withoutHyphen} OR 
+        sql`lower(replace(replace(${submittedSongs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR 
+            lower(${submittedSongs.zoneId}) = ${cleanZone} OR 
             lower(${submittedSongs.zoneId}) = ${withHyphen} OR 
-            lower(replace(${submittedSongs.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
-            lower(replace(${submittedSongs.rawData}->>'zone_code', '-', '')) = ${withoutHyphen}`
+            lower(replace(replace(${submittedSongs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR 
+            lower(replace(replace(${submittedSongs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen}`
       );
     } else {
+      // HQ Scope / Global View: include all submissions (unassigned, international, pending)
       rows = await db.select().from(submittedSongs);
     }
 
@@ -90,7 +99,31 @@ router.get('/', requireAuth, async (req: any, res) => {
       data = data.filter((s) => s.status === status);
     }
 
-    data.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    function getActivityTimestamp(s: any): number {
+      const candidates = [
+        s.lastActivityAt,
+        s.updatedAt,
+        s.createdAt,
+        s.rawData?.lastActivityAt,
+        s.rawData?.updatedAt,
+        s.rawData?.createdAt,
+        s.rawData?.submittedAt,
+      ];
+      if (Array.isArray(s.conversation) && s.conversation.length > 0) {
+        const lastMsg = s.conversation[s.conversation.length - 1];
+        if (lastMsg?.timestamp) candidates.push(lastMsg.timestamp);
+      }
+      for (const c of candidates) {
+        if (c) {
+          const ms = new Date(c).getTime();
+          if (!isNaN(ms) && ms > 0) return ms;
+        }
+      }
+      return 0;
+    }
+
+    // Sort by latest update / reply / submission to the top
+    data.sort((a, b) => getActivityTimestamp(b) - getActivityTimestamp(a));
     res.json({ success: true, count: data.length, data });
   } catch (err) {
     console.error('[submitted-songs:get]', err);
