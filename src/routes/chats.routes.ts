@@ -255,10 +255,15 @@ router.delete('/:chatId', requireAuth, async (req, res) => {
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {
     const messageRows = await db.select().from(messages).where(eq(messages.chatId, req.params.chatId));
-    const data = messageRows.map((m) => {
-      const merged = mergeRawRow(m);
-      const raw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as Record<string, any>) : {};
-      return {
+    const data = messageRows
+      .filter((m) => {
+        const raw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as Record<string, any>) : {};
+        return !raw.deleted;
+      })
+      .map((m) => {
+        const merged = mergeRawRow(m);
+        const raw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as Record<string, any>) : {};
+        return {
         ...merged,
         id: m.id,
         chatId: m.chatId,
