@@ -5,9 +5,29 @@ import { db } from '../db';
 import { chats, messages, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
-import { broadcast } from '../ws/wsServer';
+import { broadcast, getUserPresence, getAllPresence } from '../ws/wsServer';
 
 const router = Router();
+
+// GET /chats/presence — get all online users presence map
+router.get('/presence', requireAuth, async (_req, res) => {
+  try {
+    const presence = getAllPresence();
+    return res.json({ data: presence });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to fetch presence' });
+  }
+});
+
+// GET /chats/presence/:userId — get single user presence
+router.get('/presence/:userId', requireAuth, async (req, res) => {
+  try {
+    const presence = getUserPresence(req.params.userId);
+    return res.json({ data: presence });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to fetch presence' });
+  }
+});
 
 function shapeChat(row: typeof chats.$inferSelect) {
   const merged = mergeRawRow(row);
@@ -442,4 +462,41 @@ router.delete('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
   }
 });
 
+// POST /chats/:chatId/read — Mark chat as read
+router.post('/:chatId/read', requireAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const auth = res.locals.auth;
+
+    broadcast('chat_read', chatId, { chatId, userId: auth.userId });
+    res.json({ success: true, message: 'Chat marked as read' });
+  } catch (err) {
+    console.error('[chats/:id/read]', err);
+    res.status(500).json({ success: false, error: 'Failed to mark chat as read' });
+  }
+});
+
+// POST /chats/:chatId/typing — Broadcast typing status
+router.post('/:chatId/typing', requireAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { status, userName } = req.body;
+    const auth = res.locals.auth;
+
+    broadcast('typing', chatId, {
+      chatId,
+      userId: auth.userId,
+      userName: userName || 'User',
+      status: status || null,
+      timestamp: Date.now(),
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[chats/:id/typing]', err);
+    res.status(500).json({ success: false, error: 'Failed to broadcast typing status' });
+  }
+});
+
 export default router;
+

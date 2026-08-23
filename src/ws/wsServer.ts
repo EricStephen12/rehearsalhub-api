@@ -11,8 +11,16 @@ interface AuthenticatedSocket extends WebSocket {
   userId: string;
 }
 
+export interface UserPresence {
+  userId: string;
+  isOnline: boolean;
+  lastSeen: number;
+}
+
 const subscriptions = new Map<string, Set<SubscriptionKey>>();
 const connections = new Map<string, AuthenticatedSocket>();
+const userSocketCounts = new Map<string, number>();
+const userPresenceMap = new Map<string, UserPresence>();
 
 let wss: WebSocketServer | null = null;
 
@@ -39,6 +47,56 @@ export function broadcast(resource: string, id: string, data: unknown): void {
     if (!socket || socket.readyState !== WebSocket.OPEN) continue;
 
     socket.send(JSON.stringify({ type: 'event', resource, id, data }));
+  }
+}
+
+// ── Presence Helpers ─────────────────────────────────────────────────────────
+export function getUserPresence(userId: string): UserPresence {
+  return userPresenceMap.get(userId) || {
+    userId,
+    isOnline: false,
+    lastSeen: Date.now(),
+  };
+}
+
+export function getAllPresence(): Record<string, UserPresence> {
+  const result: Record<string, UserPresence> = {};
+  for (const [userId, presence] of userPresenceMap.entries()) {
+    result[userId] = presence;
+  }
+  return result;
+}
+
+function handleUserConnected(userId: string): void {
+  const currentCount = userSocketCounts.get(userId) || 0;
+  userSocketCounts.set(userId, currentCount + 1);
+
+  const presence: UserPresence = {
+    userId,
+    isOnline: true,
+    lastSeen: Date.now(),
+  };
+  userPresenceMap.set(userId, presence);
+
+  broadcast('presence', userId, presence);
+  broadcast('presence', 'all', presence);
+}
+
+function handleUserDisconnected(userId: string): void {
+  const currentCount = userSocketCounts.get(userId) || 1;
+  const newCount = Math.max(0, currentCount - 1);
+  userSocketCounts.set(userId, newCount);
+
+  if (newCount === 0) {
+    const presence: UserPresence = {
+      userId,
+      isOnline: false,
+      lastSeen: Date.now(),
+    };
+    userPresenceMap.set(userId, presence);
+
+    broadcast('presence', userId, presence);
+    broadcast('presence', 'all', presence);
   }
 }
 
@@ -75,6 +133,8 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
     connections.set(socket.connectionId, socket);
     subscriptions.set(socket.connectionId, new Set());
 
+    handleUserConnected(socket.userId);
+
     socket.on('message', (raw) => {
       let msg: any;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
@@ -85,6 +145,15 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
         const key: SubscriptionKey = `${msg.resource}:${msg.id}`;
         connSubs.add(key); // Set deduplicates automatically
         socket.send(JSON.stringify({ type: 'subscribed', resource: msg.resource, id: msg.id }));
+
+        // If subscribing to presence, send current presence immediately
+        if (msg.resource === 'presence') {
+          if (msg.id === 'all') {
+            socket.send(JSON.stringify({ type: 'event', resource: 'presence', id: 'all', data: getAllPresence() }));
+          } else {
+            socket.send(JSON.stringify({ type: 'event', resource: 'presence', id: msg.id, data: getUserPresence(msg.id) }));
+          }
+        }
         return;
       }
 
@@ -98,16 +167,28 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
         socket.send(JSON.stringify({ type: 'pong' }));
         return;
       }
+
+      if (msg.type === 'get_presence' && typeof msg.userId === 'string') {
+        socket.send(JSON.stringify({
+          type: 'event',
+          resource: 'presence',
+          id: msg.userId,
+          data: getUserPresence(msg.userId),
+        }));
+        return;
+      }
     });
 
     socket.on('close', () => {
       subscriptions.delete(socket.connectionId);
       connections.delete(socket.connectionId);
+      handleUserDisconnected(socket.userId);
     });
 
     socket.on('error', () => {
       subscriptions.delete(socket.connectionId);
       connections.delete(socket.connectionId);
+      handleUserDisconnected(socket.userId);
     });
   });
 
