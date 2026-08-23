@@ -165,7 +165,20 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
       ? (existing.rawData as Record<string, any>)
       : {};
 
-    const { name, last_message, lastMessage, last_message_at, member_ids, participants } = req.body;
+    const { 
+      name, 
+      avatar, 
+      description, 
+      admins, 
+      pinnedMessageId, 
+      pinnedBy,
+      clearedAt,
+      last_message, 
+      lastMessage, 
+      last_message_at, 
+      member_ids, 
+      participants 
+    } = req.body;
 
     const nextParticipants = Array.isArray(member_ids)
       ? member_ids
@@ -176,6 +189,12 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
     const nextRaw = {
       ...prevRaw,
       ...(name !== undefined ? { name } : {}),
+      ...(avatar !== undefined ? { avatar } : {}),
+      ...(description !== undefined ? { description } : {}),
+      ...(admins !== undefined ? { admins } : {}),
+      ...(pinnedMessageId !== undefined ? { pinnedMessageId } : {}),
+      ...(pinnedBy !== undefined ? { pinnedBy } : {}),
+      ...(clearedAt !== undefined ? { clearedAt } : {}),
       ...(last_message !== undefined || lastMessage !== undefined ? { lastMessage: last_message || lastMessage } : {}),
       ...(last_message_at !== undefined ? { lastTimestamp: last_message_at } : {}),
       ...(nextParticipants ? { participants: nextParticipants } : {}),
@@ -198,6 +217,20 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
   }
 });
 
+// DELETE /chats/:chatId — Delete chat / group
+router.delete('/:chatId', requireAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    await db.delete(messages).where(eq(messages.chatId, chatId));
+    await db.delete(chats).where(eq(chats.id, chatId));
+    broadcast('chat_deleted', chatId, { id: chatId });
+    res.json({ success: true, message: 'Chat deleted successfully' });
+  } catch (err) {
+    console.error('[chats:delete]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete chat' });
+  }
+});
+
 // GET /chats/:chatId/messages
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {
@@ -214,8 +247,19 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
         type: m.type || 'text',
         senderId: m.senderId || raw.senderId || 'admin',
         senderName: raw.senderName || raw.sender_name || 'Admin Support',
+        senderAvatar: raw.senderAvatar || raw.sender_avatar,
         senderType: raw.senderType || (raw.senderId === 'admin' ? 'admin' : 'user'),
         timestamp: (raw.timestamp as string) || (raw.createdAt as string) || new Date().toISOString(),
+        imageUrl: raw.imageUrl || raw.media_url,
+        attachment: raw.attachment,
+        voiceUrl: raw.voiceUrl || raw.voice_url,
+        voiceDuration: raw.voiceDuration || raw.voice_duration,
+        replyTo: raw.replyTo || raw.reply_to,
+        reactions: m.reactions || raw.reactions || {},
+        edited: m.edited ?? raw.edited ?? false,
+        deleted: raw.deleted ?? false,
+        status: m.status || raw.status || 'delivered',
+        pinnedInChat: raw.pinnedInChat ?? false,
       };
     });
 
@@ -226,14 +270,14 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
   }
 });
 
-// POST /chats/:chatId/messages — Send reply
+// POST /chats/:chatId/messages — Send message
 router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
   try {
     const { chatId } = req.params;
     const auth = res.locals.auth;
-    const text = req.body.text?.trim() || req.body.content?.trim();
-    if (!text) {
-      res.status(400).json({ success: false, error: 'Message text is required' });
+    const text = req.body.text?.trim() || req.body.content?.trim() || '';
+    if (!text && !req.body.imageUrl && !req.body.media_url && !req.body.attachment && !req.body.voiceUrl) {
+      res.status(400).json({ success: false, error: 'Message content is required' });
       return;
     }
 
@@ -248,12 +292,17 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       text,
       senderId: auth.userId,
       senderName,
+      senderAvatar: req.body.senderAvatar || req.body.sender_avatar,
       senderType: isSenderAdmin ? 'admin' : 'user',
       timestamp: now,
       createdAt: now,
       imageUrl: req.body.imageUrl || req.body.media_url,
       attachment: req.body.attachment,
+      voiceUrl: req.body.voiceUrl || req.body.voice_url,
+      voiceDuration: req.body.voiceDuration || req.body.voice_duration,
       replyTo: req.body.replyTo || req.body.reply_to,
+      reactions: {},
+      status: 'delivered',
     };
 
     await db.insert(messages).values({
@@ -263,6 +312,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       senderName,
       text,
       type: req.body.type || 'text',
+      reactions: {},
       rawData,
     });
 
@@ -271,15 +321,124 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
     if (existingChat) {
       const chatRaw = (existingChat.rawData && typeof existingChat.rawData === 'object') ? (existingChat.rawData as Record<string, any>) : {};
       await db.update(chats).set({
-        rawData: { ...chatRaw, lastMessage: text, lastTimestamp: now, updatedAt: now },
+        rawData: { ...chatRaw, lastMessage: text || 'Media attachment', lastTimestamp: now, updatedAt: now },
       }).where(eq(chats.id, chatId));
     }
 
     broadcast('chat', chatId, rawData);
+    broadcast('messages', chatId, rawData);
     res.status(201).json({ success: true, data: rawData });
   } catch (err) {
     console.error('[chats/:id/messages:post]', err);
     res.status(500).json({ success: false, error: 'Failed to send message' });
+  }
+});
+
+// POST /chats/:chatId/messages/:messageId/reactions — Toggle reaction
+router.post('/:chatId/messages/:messageId/reactions', requireAuth, async (req, res) => {
+  try {
+    const { chatId, messageId } = req.params;
+    const { reaction } = req.body;
+    const auth = res.locals.auth;
+    const userId = auth.userId as string;
+
+    const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Message not found' });
+      return;
+    }
+
+    const prevRaw = (existing.rawData && typeof existing.rawData === 'object')
+      ? (existing.rawData as Record<string, any>)
+      : {};
+
+    const prevReactions: Record<string, string> = {
+      ...((existing.reactions && typeof existing.reactions === 'object' ? existing.reactions : {}) as Record<string, string>),
+      ...((prevRaw.reactions && typeof prevRaw.reactions === 'object' ? prevRaw.reactions : {}) as Record<string, string>),
+    };
+
+    if (!reaction || prevReactions[userId] === reaction) {
+      delete prevReactions[userId];
+    } else {
+      prevReactions[userId] = reaction;
+    }
+
+    const nextRaw = {
+      ...prevRaw,
+      reactions: prevReactions,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const [updated] = await db.update(messages)
+      .set({
+        reactions: prevReactions,
+        rawData: nextRaw,
+      })
+      .where(eq(messages.id, messageId))
+      .returning();
+
+    broadcast('message_reaction', chatId, { messageId, reactions: prevReactions });
+    broadcast('messages', chatId, { id: messageId, reactions: prevReactions });
+    res.json({ success: true, data: { messageId, reactions: prevReactions } });
+  } catch (err) {
+    console.error('[chats/:id/messages/:msgId/reactions]', err);
+    res.status(500).json({ success: false, error: 'Failed to update reaction' });
+  }
+});
+
+// PATCH /chats/:chatId/messages/:messageId — Edit or update message
+router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
+  try {
+    const { chatId, messageId } = req.params;
+    const { text, deleted, pinnedInChat } = req.body;
+    const auth = res.locals.auth;
+
+    const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Message not found' });
+      return;
+    }
+
+    const prevRaw = (existing.rawData && typeof existing.rawData === 'object')
+      ? (existing.rawData as Record<string, any>)
+      : {};
+
+    const nextRaw = {
+      ...prevRaw,
+      ...(text !== undefined ? { text, edited: true } : {}),
+      ...(deleted !== undefined ? { deleted } : {}),
+      ...(pinnedInChat !== undefined ? { pinnedInChat } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const [updated] = await db.update(messages)
+      .set({
+        ...(text !== undefined ? { text, edited: true } : {}),
+        rawData: nextRaw,
+      })
+      .where(eq(messages.id, messageId))
+      .returning();
+
+    broadcast('message_updated', chatId, { id: messageId, ...nextRaw });
+    broadcast('messages', chatId, { id: messageId, ...nextRaw });
+    res.json({ success: true, data: { id: messageId, ...nextRaw } });
+  } catch (err) {
+    console.error('[chats/:id/messages/:msgId:patch]', err);
+    res.status(500).json({ success: false, error: 'Failed to update message' });
+  }
+});
+
+// DELETE /chats/:chatId/messages/:messageId — Delete message
+router.delete('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
+  try {
+    const { chatId, messageId } = req.params;
+    await db.delete(messages).where(eq(messages.id, messageId));
+    broadcast('message_deleted', chatId, { messageId });
+    broadcast('messages', chatId, { id: messageId, deleted: true });
+    res.json({ success: true, message: 'Message deleted successfully' });
+  } catch (err) {
+    console.error('[chats/:id/messages/:msgId:delete]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete message' });
   }
 });
 
