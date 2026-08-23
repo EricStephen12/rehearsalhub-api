@@ -177,6 +177,32 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
         }));
         return;
       }
+
+      if (msg.type === 'call:signal') {
+        const targetUserId = msg.targetUserId || msg.signal?.receiverId || msg.signal?.targetUserId || msg.signal?.callerId;
+        if (!targetUserId) return;
+
+        const payload = {
+          fromUserId: socket.userId,
+          ...(msg.signal || msg.data || msg),
+        };
+
+        // Broadcast to any subscriber of call:{targetUserId}
+        broadcast('call', targetUserId, payload);
+
+        // Also deliver directly to all open sockets of target user
+        for (const conn of connections.values()) {
+          if (conn.userId === targetUserId && conn.readyState === WebSocket.OPEN) {
+            conn.send(JSON.stringify({
+              type: 'event',
+              resource: 'call',
+              id: targetUserId,
+              data: payload,
+            }));
+          }
+        }
+        return;
+      }
     });
 
     socket.on('close', () => {
