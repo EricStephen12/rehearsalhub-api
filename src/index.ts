@@ -32,6 +32,7 @@ import mediaRouter from './routes/media.routes';
 import { upcomingEventsRouter } from './routes/upcomingEvents.routes';
 import supportRouter from './routes/support.routes';
 import uploadRouter from './routes/upload.routes';
+import momentsRouter from './routes/moments.routes';
 import { writesRouter } from './routes/writes.routes';
 import { createWsServer } from './ws/wsServer';
 
@@ -122,6 +123,8 @@ app.use('/media', mediaRouter);
 app.use('/media-videos', mediaRouter);
 app.use('/upload', uploadRouter);
 app.use('/api/upload', uploadRouter);
+app.use('/moments', momentsRouter);
+app.use('/api/moments', momentsRouter);
 app.use('/upcoming-events', upcomingEventsRouter);
 app.use('/events', upcomingEventsRouter);
 app.use('/calendar-events', upcomingEventsRouter);
