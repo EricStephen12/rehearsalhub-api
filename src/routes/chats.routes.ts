@@ -29,6 +29,48 @@ router.get('/presence/:userId', requireAuth, async (req, res) => {
   }
 });
 
+function normalizeTimestampToISO(ts: any): string | null {
+  if (!ts) return null;
+  if (ts instanceof Date) {
+    return !isNaN(ts.getTime()) ? ts.toISOString() : null;
+  }
+  if (typeof ts === 'object') {
+    const sec = ts._seconds ?? ts.seconds;
+    if (sec !== undefined && sec !== null) {
+      const s = Number(sec);
+      const nano = Number(ts._nanoseconds ?? ts.nanoseconds ?? 0);
+      if (!isNaN(s)) {
+        const d = new Date(s * 1000 + Math.floor(nano / 1000000));
+        return !isNaN(d.getTime()) ? d.toISOString() : null;
+      }
+    }
+    if (typeof ts.toDate === 'function') {
+      const d = ts.toDate();
+      if (d instanceof Date && !isNaN(d.getTime())) return d.toISOString();
+    }
+    if (typeof ts.toMillis === 'function') {
+      const d = new Date(ts.toMillis());
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+  }
+  if (typeof ts === 'number') {
+    const ms = ts > 1e11 ? ts : ts > 1e8 ? ts * 1000 : ts;
+    const d = new Date(ms);
+    return !isNaN(d.getTime()) ? d.toISOString() : null;
+  }
+  if (typeof ts === 'string') {
+    const num = Number(ts);
+    if (!isNaN(num) && num > 1e8) {
+      const ms = num > 1e11 ? num : num * 1000;
+      const d = new Date(ms);
+      return !isNaN(d.getTime()) ? d.toISOString() : null;
+    }
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  return null;
+}
+
 function shapeChat(row: typeof chats.$inferSelect) {
   const merged = mergeRawRow(row);
   const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
@@ -46,9 +88,14 @@ function shapeChat(row: typeof chats.$inferSelect) {
     lastMessageText = lm.text;
   }
 
-  let lastTimestamp = raw.lastTimestamp || raw.updatedAt || raw.createdAt || new Date().toISOString();
+  const rawLastTimestamp = raw.lastTimestamp || raw.last_timestamp || raw.last_message_at || raw.updatedAt || raw.createdAt;
+  let lastTimestamp = normalizeTimestampToISO(rawLastTimestamp);
   if (lm && typeof lm === 'object' && lm.timestamp) {
-    lastTimestamp = lm.timestamp;
+    const lmIso = normalizeTimestampToISO(lm.timestamp);
+    if (lmIso) lastTimestamp = lmIso;
+  }
+  if (!lastTimestamp) {
+    lastTimestamp = normalizeTimestampToISO(row.createdBy) || null;
   }
 
   const createdBy = String(row.createdBy || raw.createdBy || raw.created_by || '');
@@ -342,8 +389,10 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
     messageRows.sort((a, b) => {
       const rawA = (a.rawData && typeof a.rawData === 'object') ? (a.rawData as Record<string, any>) : {};
       const rawB = (b.rawData && typeof b.rawData === 'object') ? (b.rawData as Record<string, any>) : {};
-      const aTime = new Date(rawA.createdAt || rawA.timestamp || 0).getTime();
-      const bTime = new Date(rawB.createdAt || rawB.timestamp || 0).getTime();
+      const aIso = normalizeTimestampToISO(rawA.createdAt || rawA.timestamp || rawA.time || rawA.date);
+      const bIso = normalizeTimestampToISO(rawB.createdAt || rawB.timestamp || rawB.time || rawB.date);
+      const aTime = aIso ? new Date(aIso).getTime() : 0;
+      const bTime = bIso ? new Date(bIso).getTime() : 0;
       return aTime - bTime;
     });
 
@@ -355,7 +404,9 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
       .map((m) => {
         const merged = mergeRawRow(m);
         const raw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as Record<string, any>) : {};
-        const msgCreatedAt = (raw.createdAt as string) || (raw.timestamp as string) || new Date().toISOString();
+        const msgCreatedAt = normalizeTimestampToISO(raw.createdAt || raw.timestamp || raw.time || raw.date)
+          || normalizeTimestampToISO((m as any).createdAt || (m as any).created_at)
+          || '1970-01-01T00:00:00.000Z';
         return {
         ...merged,
         id: m.id,
@@ -369,7 +420,7 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
         senderType: raw.senderType || (raw.senderId === 'admin' ? 'admin' : 'user'),
         timestamp: msgCreatedAt,
         createdAt: msgCreatedAt,
-        updatedAt: (raw.updatedAt as string) || msgCreatedAt,
+        updatedAt: normalizeTimestampToISO(raw.updatedAt) || msgCreatedAt,
         imageUrl: raw.imageUrl || raw.media_url,
         attachment: raw.attachment,
         voiceUrl: raw.voiceUrl || raw.voice_url,
