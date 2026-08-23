@@ -23,6 +23,32 @@ export interface UploadOptions {
   cacheControl?: string;
 }
 
+function resolveMimeType(filename?: string, contentType?: string): string {
+  if (contentType && contentType !== 'application/octet-stream') {
+    return contentType;
+  }
+  const ext = (filename?.split('.').pop() || '').toLowerCase();
+  switch (ext) {
+    case 'mp3': return 'audio/mpeg';
+    case 'm4a': return 'audio/mp4';
+    case 'wav': return 'audio/wav';
+    case 'aac': return 'audio/aac';
+    case 'webm': return 'audio/webm';
+    case 'ogg': return 'audio/ogg';
+    case 'flac': return 'audio/flac';
+    case 'jpg':
+    case 'jpeg': return 'image/jpeg';
+    case 'png': return 'image/png';
+    case 'gif': return 'image/gif';
+    case 'webp': return 'image/webp';
+    case 'svg': return 'image/svg+xml';
+    case 'mp4': return 'video/mp4';
+    case 'mov': return 'video/quicktime';
+    case 'pdf': return 'application/pdf';
+    default: return contentType || 'application/octet-stream';
+  }
+}
+
 export async function uploadToR2(
   fileBuffer: Buffer,
   options: UploadOptions = {}
@@ -35,12 +61,13 @@ export async function uploadToR2(
     : `${Date.now()}_${randomSuffix}.${ext}`;
 
   const key = folder ? `${folder}/${safeFilename}` : safeFilename;
+  const finalContentType = resolveMimeType(options.filename, options.contentType);
 
   const command = new PutObjectCommand({
     Bucket: bucketName,
     Key: key,
     Body: fileBuffer,
-    ContentType: options.contentType || 'application/octet-stream',
+    ContentType: finalContentType,
     CacheControl: options.cacheControl || 'public, max-age=31536000, immutable',
   });
 
@@ -59,11 +86,13 @@ export async function uploadToR2WithExactKey(
   exactKey: string,
   contentType?: string
 ): Promise<{ url: string; key: string; size: number }> {
+  const finalContentType = resolveMimeType(exactKey, contentType);
+
   const command = new PutObjectCommand({
     Bucket: bucketName,
     Key: exactKey,
     Body: fileBuffer,
-    ContentType: contentType || 'application/octet-stream',
+    ContentType: finalContentType,
     CacheControl: 'public, max-age=31536000, immutable',
   });
 
