@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { Router } from 'express';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql, and, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { profiles, authCredentials, notifications, zoneMembers, hqMembers } from '../schema';
@@ -114,9 +114,47 @@ const directoryIdsQuerySchema = z
       .slice(0, 50);
   });
 
-// GET /profiles?kingschat_id=xxx  or  GET /profiles?email=xxx  or  GET /profiles?ids=a,b,c
+// GET /profiles/check-username/:username
+router.get('/check-username/:username', requireAuth, async (req, res) => {
+  const usernameParam = (req.params.username || '').trim().toLowerCase().replace(/^@/, '');
+  if (!usernameParam) {
+    res.json({ success: true, available: false, message: 'Username cannot be empty' });
+    return;
+  }
+
+  const [existing] = await db
+    .select({ id: profiles.id })
+    .from(profiles)
+    .where(
+      or(
+        sql`lower(${profiles.rawData}->>'username') = ${usernameParam}`,
+        sql`lower(${profiles.rawData}->>'alias') = ${usernameParam}`
+      )
+    )
+    .limit(1);
+
+  const isAvailable = !existing || ((req as any).auth?.userId && existing.id === (req as any).auth.userId);
+  res.json({ success: true, available: Boolean(isAvailable), username: usernameParam });
+});
+
+// GET /profiles?kingschat_id=xxx or GET /profiles?email=xxx or GET /profiles?username=xxx or GET /profiles?ids=a,b,c
 router.get('/', requireAuth, async (req, res) => {
-  const { kingschat_id, email, ids } = req.query;
+  const { kingschat_id, email, ids, username } = req.query;
+
+  if (typeof username === 'string') {
+    const clean = username.trim().toLowerCase().replace(/^@/, '');
+    const rows = await db
+      .select()
+      .from(profiles)
+      .where(
+        or(
+          sql`lower(${profiles.rawData}->>'username') = ${clean}`,
+          sql`lower(${profiles.rawData}->>'alias') = ${clean}`
+        )
+      );
+    res.json({ success: true, data: rows.map(directoryDto) });
+    return;
+  }
 
   if (typeof kingschat_id === 'string') {
     const rows = await db.select().from(profiles).where(eq(profiles.kingschatId, kingschat_id));
@@ -286,8 +324,34 @@ router.patch('/:userId', requireAuth, async (req, res) => {
     raw.profile_image_url = avatar;
     raw.avatar = avatar;
   }
-  if (body.username !== undefined) raw.username = body.username.trim().toLowerCase();
-  if (body.alias !== undefined) raw.alias = body.alias.trim().toLowerCase();
+  if (body.username !== undefined || body.alias !== undefined) {
+    const candidate = String(body.username ?? body.alias ?? '').trim().toLowerCase().replace(/^@/, '');
+    if (candidate) {
+      const [taken] = await db
+        .select({ id: profiles.id })
+        .from(profiles)
+        .where(
+          and(
+            ne(profiles.id, userId),
+            or(
+              sql`lower(${profiles.rawData}->>'username') = ${candidate}`,
+              sql`lower(${profiles.rawData}->>'alias') = ${candidate}`
+            )
+          )
+        )
+        .limit(1);
+
+      if (taken) {
+        res.status(409).json({ success: false, error: `The username @${candidate} is already in use. Please choose another username.` });
+        return;
+      }
+      raw.username = candidate;
+      raw.alias = candidate;
+    } else {
+      delete raw.username;
+      delete raw.alias;
+    }
+  }
   if (body.status !== undefined) raw.status = body.status;
   if (body.is_banned !== undefined) raw.is_banned = Boolean(body.is_banned);
   if (body.is_suspended !== undefined) raw.is_suspended = Boolean(body.is_suspended);

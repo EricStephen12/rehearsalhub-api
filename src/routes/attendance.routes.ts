@@ -18,9 +18,9 @@ function shapeAttendance(row: any) {
   const eventName = row.eventName || raw.eventName || raw.event_name || 'Rehearsal';
   const status = row.status || raw.status || 'present';
   const zoneId = row.zoneId || raw.zoneId || raw.zone_id || 'general';
-  const checkInTime = row.checkInTime || raw.checkInTime || raw.check_in_time || raw.timestamp || raw.createdAt || new Date().toISOString();
+  const checkInTime = row.checkInTime || raw.checkInTime || raw.check_in_time || raw.timestamp || raw.createdAt || raw.created_at || new Date().toISOString();
   const checkOutTime = raw.checkOutTime || raw.check_out_time || null;
-  const dateString = raw.dateString || raw.date_string || new Date(checkInTime).toLocaleDateString('en-CA');
+  const dateString = raw.dateString || raw.date_string || (checkInTime ? new Date(checkInTime).toLocaleDateString('en-CA') : new Date().toLocaleDateString('en-CA'));
   const qrCode = row.qrCode || raw.qrCode || raw.qr_code || '';
 
   return {
@@ -41,6 +41,9 @@ function shapeAttendance(row: any) {
     check_out_time: checkOutTime,
     dateString,
     date_string: dateString,
+    createdAt: checkInTime,
+    created_at: checkInTime,
+    timestamp: checkInTime,
     qrCode,
     qr_code: qrCode,
     rawData: raw,

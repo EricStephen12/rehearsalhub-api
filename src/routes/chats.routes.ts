@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, sql, desc } from 'drizzle-orm';
+import { eq, sql, desc, inArray } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
 import { chats, messages, profiles } from '../schema';
@@ -51,18 +51,96 @@ function shapeChat(row: typeof chats.$inferSelect) {
     lastTimestamp = lm.timestamp;
   }
 
+  const createdBy = String(row.createdBy || raw.createdBy || raw.created_by || '');
+
   return {
     ...merged,
     id: row.id,
     type: row.type ?? (merged.type as string | undefined) ?? 'direct',
     name: raw.name || raw.userName || raw.user_name || merged.name || 'Support Thread',
+    createdBy,
     participants,
     memberIds: participants,
-    participantDetails: merged.participantDetails || row.participantDetails || {},
+    participantDetails: (merged.participantDetails || row.participantDetails || {}) as Record<string, any>,
     unreadCount: merged.unreadCount || row.unreadCount || 0,
     lastMessage: lastMessageText,
     lastTimestamp,
   };
+}
+
+async function hydrateChats(chatRows: (typeof chats.$inferSelect)[]) {
+  if (!chatRows || chatRows.length === 0) return [];
+
+  const allParticipantIds = new Set<string>();
+  for (const row of chatRows) {
+    const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
+    const participants = Array.isArray(row.participants)
+      ? row.participants
+      : Array.isArray(raw.participants)
+        ? raw.participants
+        : Array.isArray(raw.memberIds)
+          ? raw.memberIds
+          : [];
+    participants.forEach((id: any) => {
+      if (id && typeof id === 'string') allParticipantIds.add(id);
+    });
+    if (row.createdBy) allParticipantIds.add(row.createdBy);
+    if (raw.createdBy) allParticipantIds.add(raw.createdBy);
+  }
+
+  const profileMap = new Map<string, { name: string; avatar?: string; email?: string; username?: string }>();
+  if (allParticipantIds.size > 0) {
+    const idArray = Array.from(allParticipantIds);
+    const pRows = await db.select().from(profiles).where(inArray(profiles.id, idArray));
+    for (const p of pRows) {
+      const rawP = (p.rawData && typeof p.rawData === 'object') ? (p.rawData as Record<string, any>) : {};
+      const firstName = p.firstName || rawP.first_name || rawP.firstName || '';
+      const lastName = p.lastName || rawP.last_name || rawP.lastName || '';
+      const fullName = `${firstName} ${lastName}`.trim() || rawP.name || rawP.full_name || rawP.displayName || p.email || 'Member';
+      const avatar = p.avatarUrl || rawP.profile_image_url || rawP.avatar_url || rawP.photoURL || rawP.avatar;
+      const username = (rawP.username || rawP.user_name || rawP.alias || '').replace(/^@/, '');
+      profileMap.set(p.id, {
+        name: fullName,
+        avatar: avatar || undefined,
+        email: p.email || undefined,
+        username: username || undefined,
+      });
+    }
+  }
+
+  return chatRows.map((row) => {
+    const shaped = shapeChat(row);
+    const details: Record<string, any> = { ...(shaped.participantDetails || {}) };
+
+    for (const pid of shaped.participants) {
+      const prof = profileMap.get(pid);
+      if (prof) {
+        details[pid] = {
+          name: prof.name,
+          avatar: prof.avatar,
+          email: prof.email,
+          username: prof.username,
+        };
+      } else if (!details[pid] || details[pid].name === 'Member') {
+        details[pid] = { name: 'Member' };
+      }
+    }
+
+    if (shaped.createdBy && profileMap.has(shaped.createdBy)) {
+      const creatorProf = profileMap.get(shaped.createdBy)!;
+      details[shaped.createdBy] = {
+        name: creatorProf.name,
+        avatar: creatorProf.avatar,
+        email: creatorProf.email,
+        username: creatorProf.username,
+      };
+    }
+
+    return {
+      ...shaped,
+      participantDetails: details,
+    };
+  });
 }
 
 // GET /chats — chats for user or all chats for admin
@@ -100,7 +178,8 @@ router.get('/', requireAuth, async (req, res) => {
       });
     }
 
-    res.json({ success: true, count: rows.length, data: rows.map(shapeChat) });
+    const data = await hydrateChats(rows);
+    res.json({ success: true, count: data.length, data });
   } catch (err) {
     console.error('[chats/]', err);
     res.status(500).json({ success: false, error: 'Failed to load chats' });
@@ -116,7 +195,8 @@ router.get('/:chatId', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
     }
-    res.json({ success: true, data: shapeChat(row) });
+    const [hydrated] = await hydrateChats([row]);
+    res.json({ success: true, data: hydrated });
   } catch (err) {
     console.error('[chats/:id]', err);
     res.status(500).json({ success: false, error: 'Failed to load chat' });
@@ -163,8 +243,9 @@ router.post('/', requireAuth, async (req, res) => {
       rawData,
     }).returning();
 
-    broadcast('chat', chat.id, shapeChat(chat));
-    res.status(201).json({ success: true, data: shapeChat(chat) });
+    const [hydrated] = await hydrateChats([chat]);
+    broadcast('chat', chat.id, hydrated);
+    res.status(201).json({ success: true, data: hydrated });
   } catch (err) {
     console.error('[chats:post]', err);
     res.status(500).json({ success: false, error: 'Failed to create chat' });
@@ -229,8 +310,9 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
       .where(eq(chats.id, chatId))
       .returning();
 
-    broadcast('chat', chatId, shapeChat(updated));
-    res.json({ success: true, data: shapeChat(updated) });
+    const [hydrated] = await hydrateChats([updated]);
+    broadcast('chat', chatId, hydrated);
+    res.json({ success: true, data: hydrated });
   } catch (err) {
     console.error('[chats:patch]', err);
     res.status(500).json({ success: false, error: 'Failed to update chat' });
@@ -255,6 +337,16 @@ router.delete('/:chatId', requireAuth, async (req, res) => {
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {
     const messageRows = await db.select().from(messages).where(eq(messages.chatId, req.params.chatId));
+    
+    // Sort chronologically by createdAt from rawData
+    messageRows.sort((a, b) => {
+      const rawA = (a.rawData && typeof a.rawData === 'object') ? (a.rawData as Record<string, any>) : {};
+      const rawB = (b.rawData && typeof b.rawData === 'object') ? (b.rawData as Record<string, any>) : {};
+      const aTime = new Date(rawA.createdAt || rawA.timestamp || 0).getTime();
+      const bTime = new Date(rawB.createdAt || rawB.timestamp || 0).getTime();
+      return aTime - bTime;
+    });
+
     const data = messageRows
       .filter((m) => {
         const raw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as Record<string, any>) : {};
@@ -263,6 +355,7 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
       .map((m) => {
         const merged = mergeRawRow(m);
         const raw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as Record<string, any>) : {};
+        const msgCreatedAt = (raw.createdAt as string) || (raw.timestamp as string) || new Date().toISOString();
         return {
         ...merged,
         id: m.id,
@@ -274,7 +367,9 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
         senderName: raw.senderName || raw.sender_name || 'Admin Support',
         senderAvatar: raw.senderAvatar || raw.sender_avatar,
         senderType: raw.senderType || (raw.senderId === 'admin' ? 'admin' : 'user'),
-        timestamp: (raw.timestamp as string) || (raw.createdAt as string) || new Date().toISOString(),
+        timestamp: msgCreatedAt,
+        createdAt: msgCreatedAt,
+        updatedAt: (raw.updatedAt as string) || msgCreatedAt,
         imageUrl: raw.imageUrl || raw.media_url,
         attachment: raw.attachment,
         voiceUrl: raw.voiceUrl || raw.voice_url,

@@ -222,7 +222,7 @@ export async function register(input: {
 }
 
 export async function login(identifier: string, password: string): Promise<AuthTokenResult> {
-  const norm = (identifier || '').toLowerCase().trim();
+  const norm = (identifier || '').toLowerCase().trim().replace(/^@/, '');
   if (!norm) {
     throw new AuthError('Identifier and password required');
   }
