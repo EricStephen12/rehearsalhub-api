@@ -767,3 +767,15 @@ export const momentComments = pgTable('moment_comments', {
   rawData: jsonb('raw_data'),
 });
 
+/**
+ * USER FOLLOWS (FOLLOWERS & SUBSCRIBERS)
+ * Social graph for singer follows and personalized feeds.
+ */
+export const userFollows = pgTable('user_follows', {
+  id: text('id').primaryKey(), // `${followerId}_${followingId}`
+  followerId: text('follower_id').notNull(),
+  followingId: text('following_id').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+

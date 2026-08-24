@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { eq, desc, and, sql, inArray } from 'drizzle-orm';
+import { eq, desc, and, sql, inArray, not } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
-import { moments, momentLikes, momentComments, profiles } from '../schema';
+import { moments, momentLikes, momentComments, userFollows, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { broadcast } from '../ws/wsServer';
 
@@ -11,7 +11,7 @@ const router = Router();
 /**
  * Shape a moment row for the client response, adding computed fields
  */
-function shapeMoment(row: any, userHasLiked = false) {
+function shapeMoment(row: any, userHasLiked = false, isFollowingAuthor = false) {
   const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
   const mediaUrls = Array.isArray(row.mediaUrls) ? row.mediaUrls : (Array.isArray(raw.mediaUrls) ? raw.mediaUrls : []);
   const tags = Array.isArray(row.tags) ? row.tags : (Array.isArray(raw.tags) ? raw.tags : []);
@@ -34,46 +34,63 @@ function shapeMoment(row: any, userHasLiked = false) {
     sharesCount: Number(row.sharesCount || 0),
     isPinned: Boolean(row.isPinned),
     hasLiked: Boolean(userHasLiked),
+    isFollowingAuthor: Boolean(isFollowingAuthor),
     createdAt: row.createdAt || raw.createdAt || new Date().toISOString(),
     updatedAt: row.updatedAt || raw.updatedAt || new Date().toISOString(),
   };
 }
 
 /**
- * GET /moments — Paginated feed of rehearsal moments
- * Query options:
- * - feed: 'global' | 'zone' (defaults to global)
- * - zoneId: specific zone ID
+ * GET /moments — Algorithmic TikTok/Instagram style Feed
+ * 
+ * Feeds:
+ * - feed: 'fyp' | 'following' | 'all' (default: 'fyp')
  * - page: number (default 1)
- * - limit: number (default 20, max 50)
+ * - limit: number (default 20)
  * - tag: filter by hashtag
- * - userId: filter by creator
+ * - userId: filter by author
  */
 router.get('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
     const currentUserId = auth.userId;
-    const { feed = 'global', zoneId, page = '1', limit = '20', tag, userId } = req.query;
+    const { feed = 'fyp', page = '1', limit = '20', tag, userId, zoneId } = req.query;
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit as string, 10) || 20));
     const offset = (pageNum - 1) * limitNum;
 
-    let query = db.select().from(moments);
+    // 1. Fetch current user's followed singer IDs
+    let followingUserIds: string[] = [];
+    if (currentUserId) {
+      const followRows = await db
+        .select({ followingId: userFollows.followingId })
+        .from(userFollows)
+        .where(eq(userFollows.followerId, currentUserId));
+      followingUserIds = followRows.map(f => f.followingId);
+    }
+    const followingSet = new Set(followingUserIds);
 
     const conditions: any[] = [];
 
-    // Filter by specific user
+    // Filter by specific author
     if (userId) {
       conditions.push(eq(moments.userId, String(userId)));
     }
 
-    // Filter by zone if 'zone' feed is selected or specific zone requested
-    if (feed === 'zone' && (zoneId || auth.zoneId)) {
-      const targetZone = String(zoneId || auth.zoneId);
-      conditions.push(eq(moments.zoneId, targetZone));
-    } else if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
-      conditions.push(eq(moments.zoneId, String(zoneId)));
+    // Following Feed logic
+    if (feed === 'following') {
+      if (followingUserIds.length === 0) {
+        // User follows no one yet
+        res.json({
+          success: true,
+          data: [],
+          pagination: { page: pageNum, limit: limitNum, hasMore: false },
+          message: 'You are not following anyone yet. Discover choir singers in the For You feed!'
+        });
+        return;
+      }
+      conditions.push(inArray(moments.userId, followingUserIds));
     }
 
     // Filter by hashtag
@@ -82,11 +99,43 @@ router.get('/', requireAuth, async (req: any, res) => {
       conditions.push(sql`${moments.tags}::jsonb @> ${JSON.stringify([cleanTag])}::jsonb`);
     }
 
-    const rows = conditions.length > 0
-      ? await query.where(and(...conditions)).orderBy(desc(moments.isPinned), desc(moments.createdAt)).limit(limitNum).offset(offset)
-      : await query.orderBy(desc(moments.isPinned), desc(moments.createdAt)).limit(limitNum).offset(offset);
+    if (zoneId && zoneId !== 'all') {
+      conditions.push(eq(moments.zoneId, String(zoneId)));
+    }
 
-    // Fetch current user's likes for these moments in one batch
+    let rows: any[] = [];
+
+    if (feed === 'following') {
+      // Following feed is strictly reverse-chronological
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      rows = await db
+        .select()
+        .from(moments)
+        .where(whereClause)
+        .orderBy(desc(moments.isPinned), desc(moments.createdAt))
+        .limit(limitNum)
+        .offset(offset);
+    } else {
+      // "For You" (FYP) Algorithmic Ranking Formula:
+      // Score = (likes * 3 + comments * 5 + 10) / ((age_hours + 2) ^ 1.4)
+      const fypScoreSql = sql`
+        (
+          (${moments.likesCount} * 3.0 + ${moments.commentsCount} * 5.0 + 10.0) 
+          / POWER(GREATEST(0.1, EXTRACT(EPOCH FROM (NOW() - ${moments.createdAt})) / 3600.0 + 2.0), 1.4)
+        )
+      `;
+
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      rows = await db
+        .select()
+        .from(moments)
+        .where(whereClause)
+        .orderBy(desc(moments.isPinned), desc(fypScoreSql), desc(moments.createdAt))
+        .limit(limitNum)
+        .offset(offset);
+    }
+
+    // Fetch user's likes in one batch
     let userLikedMomentIds = new Set<string>();
     if (rows.length > 0 && currentUserId) {
       const momentIds = rows.map(r => r.id);
@@ -102,7 +151,9 @@ router.get('/', requireAuth, async (req: any, res) => {
       userLikedMomentIds = new Set(likes.map(l => l.momentId));
     }
 
-    const data = rows.map(row => shapeMoment(row, userLikedMomentIds.has(row.id)));
+    const data = rows.map(row => 
+      shapeMoment(row, userLikedMomentIds.has(row.id), followingSet.has(row.userId))
+    );
 
     res.json({
       success: true,
@@ -116,6 +167,133 @@ router.get('/', requireAuth, async (req: any, res) => {
   } catch (err: any) {
     console.error('[moments:get]', err);
     res.status(500).json({ success: false, error: err?.message || 'Failed to fetch moments' });
+  }
+});
+
+/**
+ * POST /moments/follow/:targetUserId — Toggle Follow/Unfollow a singer
+ */
+router.post('/follow/:targetUserId', requireAuth, async (req: any, res) => {
+  try {
+    const auth = res.locals.auth;
+    const currentUserId = auth.userId;
+    const { targetUserId } = req.params;
+
+    if (!targetUserId || targetUserId === currentUserId) {
+      res.status(400).json({ success: false, error: 'Cannot follow yourself or invalid user ID' });
+      return;
+    }
+
+    // Check if already following
+    const [existing] = await db
+      .select()
+      .from(userFollows)
+      .where(and(eq(userFollows.followerId, currentUserId), eq(userFollows.followingId, targetUserId)))
+      .limit(1);
+
+    let isFollowing = false;
+
+    if (existing) {
+      // Unfollow
+      await db
+        .delete(userFollows)
+        .where(and(eq(userFollows.followerId, currentUserId), eq(userFollows.followingId, targetUserId)));
+      isFollowing = false;
+    } else {
+      // Follow
+      const followId = `${currentUserId}_${targetUserId}`;
+      await db.insert(userFollows).values({
+        id: followId,
+        followerId: currentUserId,
+        followingId: targetUserId,
+        createdAt: new Date(),
+      });
+      isFollowing = true;
+    }
+
+    // Get total follower count for target user
+    const [countRow] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .where(eq(userFollows.followingId, targetUserId));
+
+    res.json({
+      success: true,
+      isFollowing,
+      followersCount: countRow?.count || 0,
+    });
+  } catch (err: any) {
+    console.error('[moments:follow]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to toggle follow' });
+  }
+});
+
+/**
+ * GET /moments/following/ids — Get IDs of all singers the current user follows
+ */
+router.get('/following/ids', requireAuth, async (req: any, res) => {
+  try {
+    const auth = res.locals.auth;
+    const currentUserId = auth.userId;
+
+    const rows = await db
+      .select({ followingId: userFollows.followingId })
+      .from(userFollows)
+      .where(eq(userFollows.followerId, currentUserId));
+
+    res.json({
+      success: true,
+      followingIds: rows.map(r => r.followingId),
+    });
+  } catch (err: any) {
+    console.error('[moments:following:ids]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch following list' });
+  }
+});
+
+/**
+ * GET /moments/following/suggestions — Get real suggested choir members to follow
+ */
+router.get('/following/suggestions', requireAuth, async (req: any, res) => {
+  try {
+    const auth = res.locals.auth;
+    const currentUserId = auth.userId;
+
+    // Get singers who have posted moments recently
+    const recentAuthors = await db
+      .select({
+        userId: moments.userId,
+        userName: moments.userName,
+        userAvatar: moments.userAvatar,
+        zoneName: moments.zoneName,
+      })
+      .from(moments)
+      .where(not(eq(moments.userId, currentUserId)))
+      .groupBy(moments.userId, moments.userName, moments.userAvatar, moments.zoneName)
+      .limit(8);
+
+    // Get current following set
+    const followRows = await db
+      .select({ followingId: userFollows.followingId })
+      .from(userFollows)
+      .where(eq(userFollows.followerId, currentUserId));
+    const followingSet = new Set(followRows.map(f => f.followingId));
+
+    const suggestions = recentAuthors.map(author => ({
+      id: author.userId,
+      name: author.userName || 'Choir Member',
+      avatar: author.userAvatar || null,
+      role: author.zoneName || 'Loveworld Singers',
+      isFollowing: followingSet.has(author.userId),
+    }));
+
+    res.json({
+      success: true,
+      data: suggestions,
+    });
+  } catch (err: any) {
+    console.error('[moments:suggestions]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch suggestions' });
   }
 });
 
@@ -139,284 +317,107 @@ router.get('/:id', requireAuth, async (req: any, res) => {
       .where(and(eq(momentLikes.momentId, id), eq(momentLikes.userId, auth.userId)))
       .limit(1);
 
-    const comments = await db
+    const [userFollow] = await db
       .select()
-      .from(momentComments)
-      .where(eq(momentComments.momentId, id))
-      .orderBy(desc(momentComments.createdAt))
-      .limit(50);
+      .from(userFollows)
+      .where(and(eq(userFollows.followerId, auth.userId), eq(userFollows.followingId, row.userId)))
+      .limit(1);
 
-    const shaped = shapeMoment(row, Boolean(userLike));
     res.json({
       success: true,
-      data: {
-        ...shaped,
-        comments,
-      },
+      data: shapeMoment(row, Boolean(userLike), Boolean(userFollow)),
     });
   } catch (err: any) {
-    console.error('[moments/:id]', err);
-    res.status(500).json({ success: false, error: 'Failed to load moment' });
+    console.error('[moments:get:id]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch moment' });
   }
 });
 
 /**
- * POST /moments — Create a new moment (photo, video reel, audio snippet)
+ * POST /moments — Create a new rehearsal moment
  */
 router.post('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
-    const userId = auth.userId;
-    const {
-      type = 'photo',
-      mediaUrls = [],
-      caption = '',
-      tags = [],
-      songId,
-      songTitle,
-      zoneId,
-      zoneName,
+    const currentUserId = auth.userId;
+    const { 
+      type = 'photo', 
+      mediaUrls = [], 
+      caption = '', 
+      tags = [], 
+      songId, 
+      songTitle, 
+      zoneId, 
+      zoneName 
     } = req.body;
 
     if (!Array.isArray(mediaUrls) || mediaUrls.length === 0) {
-      res.status(400).json({ success: false, error: 'At least one media file (image/video/audio) is required' });
+      res.status(400).json({ success: false, error: 'At least one media file (photo/video) is required' });
       return;
     }
 
-    // Get author profile details
-    const [profile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
-    const rawProfile = (profile?.rawData && typeof profile.rawData === 'object') ? (profile.rawData as Record<string, any>) : {};
+    const momentId = `moment_${crypto.randomUUID()}`;
 
-    const firstName = profile?.firstName || rawProfile.first_name || '';
-    const lastName = profile?.lastName || rawProfile.last_name || '';
-    const fullName = `${firstName} ${lastName}`.trim() || rawProfile.name || auth.email || 'Singer';
-    const avatar = profile?.avatarUrl || rawProfile.avatar_url || rawProfile.profile_image_url || null;
-    const effectiveZoneId = zoneId || rawProfile.zone_code || auth.zoneId || 'hq';
-    const effectiveZoneName = zoneName || rawProfile.zone_name || 'Loveworld Singers';
+    // Get user profile name and avatar
+    const [userProfile] = await db
+      .select()
+      .from(profiles)
+      .where(eq(profiles.id, currentUserId))
+      .limit(1);
 
-    const id = `moment_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    const now = new Date();
+    const userName = userProfile?.firstName
+      ? `${userProfile.firstName} ${userProfile.lastName || ''}`.trim()
+      : (userProfile?.email?.split('@')[0] || auth.email?.split('@')[0] || 'Choir Member');
 
-    const rawData = {
-      id,
-      userId,
-      userName: fullName,
-      userAvatar: avatar,
-      zoneId: effectiveZoneId,
-      zoneName: effectiveZoneName,
+    const userAvatar = userProfile?.avatarUrl || null;
+
+    const newMoment = {
+      id: momentId,
+      userId: currentUserId,
+      userName,
+      userAvatar,
+      zoneId: zoneId || auth.zoneId || 'hq',
+      zoneName: zoneName || 'Loveworld Singers HQ',
       type,
       mediaUrls,
       caption: caption.trim(),
-      tags: Array.isArray(tags) ? tags : [],
+      tags: Array.isArray(tags) ? tags : ['#LoveworldSingers'],
       songId: songId || null,
       songTitle: songTitle || null,
       likesCount: 0,
       commentsCount: 0,
       sharesCount: 0,
-      createdAt: now.toISOString(),
+      isPinned: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      rawData: { mediaUrls, tags },
     };
 
-    const [inserted] = await db
-      .insert(moments)
-      .values({
-        id,
-        userId,
-        userName: fullName,
-        userAvatar: avatar,
-        zoneId: effectiveZoneId,
-        zoneName: effectiveZoneName,
-        type,
-        mediaUrls,
-        caption: caption.trim(),
-        tags: Array.isArray(tags) ? tags : [],
-        songId: songId || null,
-        songTitle: songTitle || null,
-        likesCount: 0,
-        commentsCount: 0,
-        sharesCount: 0,
-        isPinned: false,
-        createdAt: now,
-        updatedAt: now,
-        rawData,
-      })
-      .returning();
+    await db.insert(moments).values(newMoment as any);
 
-    const shaped = shapeMoment(inserted, false);
-
-    // Broadcast new moment in real-time over WebSocket
-    broadcast('new_moment', effectiveZoneId, shaped);
+    // Broadcast new moment event via WebSocket
+    broadcast('moments', 'all', {
+      type: 'moment:created',
+      data: shapeMoment(newMoment, false, false),
+    });
 
     res.status(201).json({
       success: true,
-      message: 'Moment posted successfully',
-      data: shaped,
+      data: shapeMoment(newMoment, false, false),
     });
   } catch (err: any) {
-    console.error('[moments:post]', err);
+    console.error('[moments:create]', err);
     res.status(500).json({ success: false, error: err?.message || 'Failed to create moment' });
   }
 });
 
 /**
- * POST /moments/:id/like — Toggle like / unlike ❤️
+ * POST /moments/:id/like — Toggle Like on a moment
  */
 router.post('/:id/like', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
-    const userId = auth.userId;
-    const { id: momentId } = req.params;
-
-    const [moment] = await db.select().from(moments).where(eq(moments.id, momentId)).limit(1);
-    if (!moment) {
-      res.status(404).json({ success: false, error: 'Moment not found' });
-      return;
-    }
-
-    const likeId = `${momentId}_${userId}`;
-    const [existingLike] = await db.select().from(momentLikes).where(eq(momentLikes.id, likeId)).limit(1);
-
-    let liked = false;
-    let newLikesCount = Math.max(0, Number(moment.likesCount || 0));
-
-    if (existingLike) {
-      // Unlike
-      await db.delete(momentLikes).where(eq(momentLikes.id, likeId));
-      newLikesCount = Math.max(0, newLikesCount - 1);
-      liked = false;
-    } else {
-      // Like
-      const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
-      const rawP = (userProfile?.rawData && typeof userProfile.rawData === 'object') ? (userProfile.rawData as Record<string, any>) : {};
-      const userName = `${userProfile?.firstName || ''} ${userProfile?.lastName || ''}`.trim() || rawP.name || auth.email || 'Singer';
-      const userAvatar = userProfile?.avatarUrl || rawP.avatar_url || null;
-
-      await db.insert(momentLikes).values({
-        id: likeId,
-        momentId,
-        userId,
-        userName,
-        userAvatar,
-        createdAt: new Date(),
-      });
-      newLikesCount += 1;
-      liked = true;
-    }
-
-    // Atomically update moment like count
-    await db.update(moments).set({ likesCount: newLikesCount }).where(eq(moments.id, momentId));
-
-    // Broadcast like count update
-    broadcast('moment_liked', momentId, { momentId, likesCount: newLikesCount });
-
-    res.json({
-      success: true,
-      liked,
-      likesCount: newLikesCount,
-    });
-  } catch (err: any) {
-    console.error('[moments:like]', err);
-    res.status(500).json({ success: false, error: 'Failed to update like' });
-  }
-});
-
-/**
- * GET /moments/:id/comments — Get comments thread
- */
-router.get('/:id/comments', requireAuth, async (req: any, res) => {
-  try {
-    const { id: momentId } = req.params;
-    const commentsList = await db
-      .select()
-      .from(momentComments)
-      .where(eq(momentComments.momentId, momentId))
-      .orderBy(desc(momentComments.createdAt));
-
-    res.json({
-      success: true,
-      count: commentsList.length,
-      data: commentsList,
-    });
-  } catch (err: any) {
-    console.error('[moments:comments:get]', err);
-    res.status(500).json({ success: false, error: 'Failed to load comments' });
-  }
-});
-
-/**
- * POST /moments/:id/comments — Add a comment 💬
- */
-router.post('/:id/comments', requireAuth, async (req: any, res) => {
-  try {
-    const auth = res.locals.auth;
-    const userId = auth.userId;
-    const { id: momentId } = req.params;
-    const { content } = req.body;
-
-    if (!content || !content.trim()) {
-      res.status(400).json({ success: false, error: 'Comment content cannot be empty' });
-      return;
-    }
-
-    const [moment] = await db.select().from(moments).where(eq(moments.id, momentId)).limit(1);
-    if (!moment) {
-      res.status(404).json({ success: false, error: 'Moment not found' });
-      return;
-    }
-
-    const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
-    const rawP = (userProfile?.rawData && typeof userProfile.rawData === 'object') ? (userProfile.rawData as Record<string, any>) : {};
-    const userName = `${userProfile?.firstName || ''} ${userProfile?.lastName || ''}`.trim() || rawP.name || auth.email || 'Singer';
-    const userAvatar = userProfile?.avatarUrl || rawP.avatar_url || null;
-
-    const commentId = `comment_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    const now = new Date();
-
-    const [newComment] = await db
-      .insert(momentComments)
-      .values({
-        id: commentId,
-        momentId,
-        userId,
-        userName,
-        userAvatar,
-        content: content.trim(),
-        createdAt: now,
-        rawData: {
-          id: commentId,
-          momentId,
-          userId,
-          userName,
-          userAvatar,
-          content: content.trim(),
-          createdAt: now.toISOString(),
-        },
-      })
-      .returning();
-
-    // Increment comments count on the moment
-    const newCommentsCount = Number(moment.commentsCount || 0) + 1;
-    await db.update(moments).set({ commentsCount: newCommentsCount }).where(eq(moments.id, momentId));
-
-    // Broadcast new comment
-    broadcast('new_moment_comment', momentId, { momentId, comment: newComment, commentsCount: newCommentsCount });
-
-    res.status(201).json({
-      success: true,
-      message: 'Comment posted',
-      data: newComment,
-    });
-  } catch (err: any) {
-    console.error('[moments:comments:post]', err);
-    res.status(500).json({ success: false, error: 'Failed to post comment' });
-  }
-});
-
-/**
- * DELETE /moments/:id — Delete a moment (Owner or Admin)
- */
-router.delete('/:id', requireAuth, async (req: any, res) => {
-  try {
-    const auth = res.locals.auth;
+    const currentUserId = auth.userId;
     const { id } = req.params;
 
     const [moment] = await db.select().from(moments).where(eq(moments.id, id)).limit(1);
@@ -425,28 +426,193 @@ router.delete('/:id', requireAuth, async (req: any, res) => {
       return;
     }
 
-    const isOwner = moment.userId === auth.userId;
-    const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
+    const [existingLike] = await db
+      .select()
+      .from(momentLikes)
+      .where(and(eq(momentLikes.momentId, id), eq(momentLikes.userId, currentUserId)))
+      .limit(1);
 
-    if (!isOwner && !isAdmin) {
-      res.status(403).json({ success: false, error: 'You do not have permission to delete this moment' });
-      return;
+    let liked = false;
+    let newLikesCount = moment.likesCount || 0;
+
+    if (existingLike) {
+      // Unlike
+      await db
+        .delete(momentLikes)
+        .where(and(eq(momentLikes.momentId, id), eq(momentLikes.userId, currentUserId)));
+      newLikesCount = Math.max(0, newLikesCount - 1);
+      liked = false;
+    } else {
+      // Like
+      const likeId = `${id}_${currentUserId}`;
+      await db.insert(momentLikes).values({
+        id: likeId,
+        momentId: id,
+        userId: currentUserId,
+        userName: auth.name || auth.email?.split('@')[0] || 'Choir Member',
+        userAvatar: auth.avatarUrl || null,
+        createdAt: new Date(),
+      });
+      newLikesCount = newLikesCount + 1;
+      liked = true;
     }
 
-    // Cascade delete likes and comments
-    await db.delete(momentLikes).where(eq(momentLikes.momentId, id));
-    await db.delete(momentComments).where(eq(momentComments.momentId, id));
-    await db.delete(moments).where(eq(moments.id, id));
+    // Atomic count update
+    await db
+      .update(moments)
+      .set({ likesCount: newLikesCount, updatedAt: new Date() })
+      .where(eq(moments.id, id));
 
-    broadcast('moment_deleted', moment.zoneId || 'hq', { id });
+    // Broadcast live like update
+    broadcast('moments', id, {
+      type: 'moment:liked',
+      data: { momentId: id, likesCount: newLikesCount, userId: currentUserId, liked },
+    });
 
     res.json({
       success: true,
-      message: 'Moment deleted successfully',
+      liked,
+      likesCount: newLikesCount,
     });
   } catch (err: any) {
+    console.error('[moments:like]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to toggle like' });
+  }
+});
+
+/**
+ * GET /moments/:id/comments — Fetch comments under a moment
+ */
+router.get('/:id/comments', requireAuth, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const rows = await db
+      .select()
+      .from(momentComments)
+      .where(eq(momentComments.momentId, id))
+      .orderBy(desc(momentComments.createdAt));
+
+    res.json({
+      success: true,
+      data: rows.map(r => ({
+        id: r.id,
+        momentId: r.momentId,
+        userId: r.userId,
+        userName: r.userName || 'Choir Member',
+        userAvatar: r.userAvatar || null,
+        content: r.content,
+        createdAt: r.createdAt,
+      })),
+    });
+  } catch (err: any) {
+    console.error('[moments:comments:get]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch comments' });
+  }
+});
+
+/**
+ * POST /moments/:id/comments — Add a new comment
+ */
+router.post('/:id/comments', requireAuth, async (req: any, res) => {
+  try {
+    const auth = res.locals.auth;
+    const currentUserId = auth.userId;
+    const { id } = req.params;
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      res.status(400).json({ success: false, error: 'Comment content cannot be empty' });
+      return;
+    }
+
+    const [moment] = await db.select().from(moments).where(eq(moments.id, id)).limit(1);
+    if (!moment) {
+      res.status(404).json({ success: false, error: 'Moment not found' });
+      return;
+    }
+
+    const commentId = `comment_${crypto.randomUUID()}`;
+
+    const [userProfile] = await db
+      .select()
+      .from(profiles)
+      .where(eq(profiles.id, currentUserId))
+      .limit(1);
+
+    const userName = userProfile?.firstName
+      ? `${userProfile.firstName} ${userProfile.lastName || ''}`.trim()
+      : (userProfile?.email?.split('@')[0] || auth.email?.split('@')[0] || 'Choir Member');
+
+    const userAvatar = userProfile?.avatarUrl || null;
+
+    const newComment = {
+      id: commentId,
+      momentId: id,
+      userId: currentUserId,
+      userName,
+      userAvatar,
+      content: content.trim(),
+      createdAt: new Date(),
+    };
+
+    await db.insert(momentComments).values(newComment);
+
+    const updatedCommentsCount = (moment.commentsCount || 0) + 1;
+    await db
+      .update(moments)
+      .set({ commentsCount: updatedCommentsCount, updatedAt: new Date() })
+      .where(eq(moments.id, id));
+
+    // Broadcast new comment
+    broadcast('moments', id, {
+      type: 'moment:comment:added',
+      data: { momentId: id, comment: newComment, commentsCount: updatedCommentsCount },
+    });
+
+    res.status(201).json({
+      success: true,
+      data: newComment,
+    });
+  } catch (err: any) {
+    console.error('[moments:comments:post]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to post comment' });
+  }
+});
+
+/**
+ * DELETE /moments/:id — Delete a moment
+ */
+router.delete('/:id', requireAuth, async (req: any, res) => {
+  try {
+    const auth = res.locals.auth;
+    const currentUserId = auth.userId;
+    const { id } = req.params;
+
+    const [moment] = await db.select().from(moments).where(eq(moments.id, id)).limit(1);
+    if (!moment) {
+      res.status(404).json({ success: false, error: 'Moment not found' });
+      return;
+    }
+
+    const isAdmin = auth.role === 'admin' || auth.role === 'boss' || auth.role === 'super_admin';
+    if (moment.userId !== currentUserId && !isAdmin) {
+      res.status(403).json({ success: false, error: 'Permission denied' });
+      return;
+    }
+
+    await db.delete(momentComments).where(eq(momentComments.momentId, id));
+    await db.delete(momentLikes).where(eq(momentLikes.momentId, id));
+    await db.delete(moments).where(eq(moments.id, id));
+
+    broadcast('moments', id, {
+      type: 'moment:deleted',
+      data: { momentId: id },
+    });
+
+    res.json({ success: true, message: 'Moment deleted successfully' });
+  } catch (err: any) {
     console.error('[moments:delete]', err);
-    res.status(500).json({ success: false, error: 'Failed to delete moment' });
+    res.status(500).json({ success: false, error: err?.message || 'Failed to delete moment' });
   }
 });
 
