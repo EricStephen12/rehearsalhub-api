@@ -19,41 +19,14 @@ function parseIsoDate(val: any): string {
   return new Date().toISOString();
 }
 
-const R2_PUBLIC_BASE = (process.env.R2_PUBLIC_URL || 'https://pub-cb7697578fcc48d3b3aeb70a47eb2f65.r2.dev').replace(/\/+$/, '');
-
-function toR2Url(url: string | null | undefined, tableHint: string): string {
-  if (!url || typeof url !== 'string') return url || '';
-  if (!url.includes('cloudinary.com')) return url;
-
-  try {
-    const cleanUrl = url.split('?')[0].split('#')[0];
-    const u = new URL(cleanUrl);
-    const parts = u.pathname.split('/').filter(Boolean);
-    const uploadIdx = parts.findIndex(p => p === 'upload');
-    let relPath = '';
-    if (uploadIdx !== -1 && uploadIdx < parts.length - 1) {
-      const remaining = parts.slice(uploadIdx + 1).filter(p => !p.match(/^v\d+$/) && !p.startsWith('fl_') && !p.startsWith('c_'));
-      relPath = remaining.join('/');
-    } else {
-      relPath = parts.slice(2).join('/');
-    }
-    if (!relPath) return url;
-    return `${R2_PUBLIC_BASE}/${tableHint}/${relPath}`.replace(/\/+/g, '/').replace('https:/', 'https://');
-  } catch {
-    return url;
-  }
-}
-
 function normalizeAsset(row: any, source: 'media_videos' | 'media_assets' | 'zone_media_assets'): any {
   const m = mergeRawRow(row);
-  const rawUrl = String(m.url || m.videoUrl || m.video_url || '');
-  const url = toR2Url(rawUrl, source);
-  const rawThumb = typeof m.thumbnail === 'string' ? m.thumbnail : null;
-  const thumbnail = rawThumb ? toR2Url(rawThumb, source) : null;
+  const url = String(m.url || m.videoUrl || m.video_url || '');
+  const thumbnail = typeof m.thumbnail === 'string' ? m.thumbnail : null;
   const title = String(m.title || m.name || 'Untitled Asset');
   
   let detectedType = m.type || 'video';
-  const lowerUrl = (rawUrl || url).toLowerCase();
+  const lowerUrl = url.toLowerCase();
   const lowerTitle = title.toLowerCase();
 
   if (detectedType === 'audio' || lowerUrl.match(/\.(mp3|wav|m4a|aac|ogg|flac|wma|3gp)$/) || lowerTitle.match(/\.(mp3|wav|m4a|aac|ogg|flac|wma|3gp)$/)) {
