@@ -380,6 +380,19 @@ router.delete('/:chatId', requireAuth, async (req, res) => {
   }
 });
 
+// DELETE /chats/:chatId/messages — Clear all messages in chat
+router.delete('/:chatId/messages', requireAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    await db.delete(messages).where(eq(messages.chatId, chatId));
+    broadcast('chat_cleared', chatId, { chatId });
+    res.json({ success: true, message: 'All messages cleared' });
+  } catch (err) {
+    console.error('[chats/:id/messages:delete]', err);
+    res.status(500).json({ success: false, error: 'Failed to clear messages' });
+  }
+});
+
 // GET /chats/:chatId/messages
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {

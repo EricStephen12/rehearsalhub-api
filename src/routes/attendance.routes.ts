@@ -97,8 +97,8 @@ router.get('/mine', requireAuth, async (_req, res) => {
   }
 });
 
-/** POST /attendance/check-in — Singer or Admin check in */
-router.post('/check-in', requireAuth, async (req: any, res) => {
+/** POST /attendance or POST /attendance/check-in — Singer or Admin check in */
+const handleCheckIn = async (req: any, res: any) => {
   try {
     const auth = res.locals.auth;
     const id = crypto.randomUUID();
@@ -151,7 +151,10 @@ router.post('/check-in', requireAuth, async (req: any, res) => {
     console.error('[attendance:check-in]', err);
     res.status(500).json({ success: false, error: err?.message || 'Check-in failed' });
   }
-});
+};
+
+router.post('/check-in', requireAuth, handleCheckIn);
+router.post('/', requireAuth, handleCheckIn);
 
 /** POST /attendance/check-out — Clock out */
 router.post('/check-out', requireAuth, async (req: any, res) => {
