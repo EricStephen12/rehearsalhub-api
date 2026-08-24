@@ -26,7 +26,7 @@ const args = process.argv.slice(2);
 const isLive = args.includes('--live');
 const limitArg = args.find(a => a.startsWith('--limit='));
 const limit = limitArg ? parseInt(limitArg.split('=')[1], 10) : Infinity;
-const numWorkers = 2; // 2 independent parallel worker queues
+const numWorkers = 4; // 4 independent parallel worker queues
 
 function getR2KeyFromCloudinaryUrl(url, tableHint) {
   try {
@@ -135,6 +135,22 @@ async function updateDbItem(table, id, oldUrl, newUrl) {
       UPDATE "${table}"
       SET banner_image = '${escapedNew}'
       WHERE id = '${id.replace(/'/g, "''")}' AND banner_image = '${escapedOld}'
+    `);
+  } catch {}
+
+  try {
+    await sql.unsafe(`
+      UPDATE "${table}"
+      SET video_url = '${escapedNew}'
+      WHERE id = '${id.replace(/'/g, "''")}' AND video_url = '${escapedOld}'
+    `);
+  } catch {}
+
+  try {
+    await sql.unsafe(`
+      UPDATE "${table}"
+      SET thumbnail = '${escapedNew}'
+      WHERE id = '${id.replace(/'/g, "''")}' AND thumbnail = '${escapedOld}'
     `);
   } catch {}
 }

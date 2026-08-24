@@ -35,6 +35,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY || 'dfec6c0153c47aa9c036d9e8bbbe2739ec738352f55afa2f8fd70df95f67ae90' }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL || 'https://pub-cb7697578fcc48d3b3aeb70a47eb2f65.r2.dev' }}
         run: |
+          node scripts/scan-all-media.js
           if [ -n "${{ github.event.inputs.limit }}" ]; then
             node scripts/migrate-cloudinary-to-r2.js --live --limit=${{ github.event.inputs.limit }}
           else
