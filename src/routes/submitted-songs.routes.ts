@@ -2,11 +2,91 @@ import { Router } from 'express';
 import { eq, or, sql } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
-import { submittedSongs, profiles } from '../schema';
+import { submittedSongs, profiles, notifications } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
+import { broadcast } from '../ws/wsServer';
 
 const router = Router();
+
+async function createSubmissionNotification({
+  targetUserId,
+  targetAudience,
+  title,
+  message,
+  type = 'info',
+  category = 'song_submission',
+  priority = 'normal',
+  senderName = 'Ministry Review Team',
+  senderId,
+  submissionId,
+  zoneId,
+}: {
+  targetUserId?: string | null;
+  targetAudience?: string;
+  title: string;
+  message: string;
+  type?: string;
+  category?: string;
+  priority?: string;
+  senderName?: string;
+  senderId?: string;
+  submissionId: string;
+  zoneId?: string;
+}) {
+  try {
+    const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const now = new Date().toISOString();
+
+    const rawData = {
+      id,
+      title,
+      message,
+      body: message,
+      type,
+      category,
+      priority,
+      target_audience: targetAudience || (targetUserId ? 'user' : 'all'),
+      targetAudience: targetAudience || (targetUserId ? 'user' : 'all'),
+      target_user_id: targetUserId || null,
+      targetUserId: targetUserId || null,
+      target_zone_id: zoneId || null,
+      sender_id: senderId || null,
+      sender_name: senderName,
+      sentBy: senderName,
+      actionUrl: '/pages/submit-song',
+      action_url: '/pages/submit-song',
+      submissionId,
+      created_at: now,
+      createdAt: now,
+      sentAt: now,
+      is_read: false,
+    };
+
+    const notifRecord = {
+      id,
+      title,
+      message,
+      type,
+      category,
+      priority,
+      targetAudience: targetAudience || (targetUserId ? 'user' : 'all'),
+      targetUserId: targetUserId || null,
+      zoneId: zoneId || null,
+      senderId: senderId || null,
+      actionUrl: '/pages/submit-song',
+      isRead: false,
+      createdAt: now,
+      rawData,
+    };
+
+    await db.insert(notifications).values(notifRecord);
+
+    broadcast('notifications', 'all', notifRecord);
+  } catch (err) {
+    console.error('[createSubmissionNotification] Error:', err);
+  }
+}
 
 function shapeSubmission(r: any) {
   const m = mergeRawRow(r);
@@ -261,6 +341,23 @@ router.post('/:id/approve', requireAuth, async (req: any, res) => {
     const updatedRaw = { ...raw, status: 'approved', approvedAt: new Date().toISOString(), approvedBy: res.locals.auth.userId };
 
     await db.update(submittedSongs).set({ status: 'approved', rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+
+    const songTitle = existing.title || raw.songTitle || raw.title || 'Submitted Song';
+    if (existing.userId) {
+      await createSubmissionNotification({
+        targetUserId: existing.userId,
+        title: `Song Submission Approved! 🎉`,
+        message: `Congratulations! Your song "${songTitle}" has been approved by the ministry review team.`,
+        type: 'success',
+        category: 'song_submission',
+        priority: 'high',
+        senderName: res.locals.auth.name || 'HQ Admin',
+        senderId: res.locals.auth.userId,
+        submissionId: id,
+        zoneId: existing.zoneId || undefined,
+      });
+    }
+
     res.json({ success: true, message: 'Song approved successfully' });
   } catch (err) {
     console.error('[submitted-songs:approve]', err);
@@ -286,6 +383,24 @@ router.post('/:id/reject', requireAuth, async (req: any, res) => {
     };
 
     await db.update(submittedSongs).set({ status: 'rejected', rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+
+    const songTitle = existing.title || raw.songTitle || raw.title || 'Submitted Song';
+    const reasonText = notes || reason || raw.rejectNotes || 'Please check feedback notes.';
+    if (existing.userId) {
+      await createSubmissionNotification({
+        targetUserId: existing.userId,
+        title: `Song Submission Update: "${songTitle}"`,
+        message: `Feedback on your song "${songTitle}": ${reasonText}`,
+        type: 'info',
+        category: 'song_submission',
+        priority: 'normal',
+        senderName: res.locals.auth.name || 'HQ Admin',
+        senderId: res.locals.auth.userId,
+        submissionId: id,
+        zoneId: existing.zoneId || undefined,
+      });
+    }
+
     res.json({ success: true, message: 'Song submission rejected' });
   } catch (err) {
     console.error('[submitted-songs:reject]', err);
@@ -349,6 +464,38 @@ router.post('/:id/reply', requireAuth, async (req: any, res) => {
     };
 
     await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+
+    const songTitle = existing.title || raw.songTitle || raw.title || 'Submitted Song';
+    if (!isUserSender && existing.userId) {
+      // Admin replied to singer -> notify singer
+      await createSubmissionNotification({
+        targetUserId: existing.userId,
+        title: `New Message on "${songTitle}"`,
+        message: `${newMessage.senderName}: "${message.trim().substring(0, 100)}"`,
+        type: 'info',
+        category: 'song_submission',
+        priority: 'high',
+        senderName: newMessage.senderName,
+        senderId: auth.userId,
+        submissionId: id,
+        zoneId: existing.zoneId || undefined,
+      });
+    } else if (isUserSender) {
+      // Singer replied -> Notify admin reviewers
+      await createSubmissionNotification({
+        targetAudience: 'admins',
+        title: `Reply on Song: "${songTitle}"`,
+        message: `${newMessage.senderName}: "${message.trim().substring(0, 100)}"`,
+        type: 'info',
+        category: 'song_submission',
+        priority: 'normal',
+        senderName: newMessage.senderName,
+        senderId: auth.userId,
+        submissionId: id,
+        zoneId: existing.zoneId || undefined,
+      });
+    }
+
     res.json({ success: true, message: 'Message sent successfully', data: conversation, newMessage });
   } catch (err) {
     console.error('[submitted-songs:reply]', err);

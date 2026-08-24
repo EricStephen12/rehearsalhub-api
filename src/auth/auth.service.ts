@@ -227,45 +227,70 @@ export async function login(identifier: string, password: string): Promise<AuthT
     throw new AuthError('Identifier and password required');
   }
 
-  // Find profile by email, username, email-prefix, kingschatId, or name/alias
-  const [profile] = await db
+  // Find candidate profiles ordered by exact match relevance:
+  // 1: Exact Email
+  // 2: Exact Username
+  // 3: Exact Alias
+  // 4: Exact KingsChat ID
+  // 5: Email prefix (before @)
+  // 6: Full Name
+  // 7: First/Last Name
+  const candidateProfiles = await db
     .select()
     .from(profiles)
     .where(
       or(
         sql`lower(${profiles.email}) = ${norm}`,
-        sql`lower(split_part(${profiles.email}, '@', 1)) = ${norm}`,
-        sql`lower(${profiles.kingschatId}) = ${norm}`,
         sql`lower(${profiles.rawData}->>'username') = ${norm}`,
         sql`lower(${profiles.rawData}->>'alias') = ${norm}`,
+        sql`lower(${profiles.kingschatId}) = ${norm}`,
         sql`lower(${profiles.rawData}->>'kingschat_id') = ${norm}`,
         sql`lower(${profiles.rawData}->>'kingschatId') = ${norm}`,
+        sql`lower(split_part(${profiles.email}, '@', 1)) = ${norm}`,
         sql`lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')}`,
         sql`lower(coalesce(${profiles.firstName}, '')) = ${norm}`,
         sql`lower(coalesce(${profiles.lastName}, '')) = ${norm}`
       )
     )
-    .limit(1);
+    .orderBy(
+      sql`
+        CASE
+          WHEN lower(${profiles.email}) = ${norm} THEN 1
+          WHEN lower(${profiles.rawData}->>'username') = ${norm} THEN 2
+          WHEN lower(${profiles.rawData}->>'alias') = ${norm} THEN 3
+          WHEN lower(${profiles.kingschatId}) = ${norm} OR lower(${profiles.rawData}->>'kingschat_id') = ${norm} THEN 4
+          WHEN lower(split_part(${profiles.email}, '@', 1)) = ${norm} THEN 5
+          WHEN lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')} THEN 6
+          ELSE 7
+        END ASC
+      `
+    )
+    .limit(10);
 
-  const [cred] = profile
-    ? await db
-        .select()
-        .from(authCredentials)
-        .where(eq(authCredentials.profileId, profile.id))
-        .limit(1)
-    : [undefined];
-
-  if (!profile || !cred || !(await verifyPassword(password, cred.passwordHash))) {
+  if (!candidateProfiles || candidateProfiles.length === 0) {
     throw new AuthError('Invalid credentials');
   }
 
-  // Block login for accounts pending HQ approval
-  const raw = asRaw(profile.rawData);
-  if (raw.pending_hq_approval === true) {
-    throw new AuthError('PENDING_APPROVAL', 403);
+  // Check candidate profiles in priority order
+  for (const candidate of candidateProfiles) {
+    const [cred] = await db
+      .select()
+      .from(authCredentials)
+      .where(eq(authCredentials.profileId, candidate.id))
+      .limit(1);
+
+    if (cred && (await verifyPassword(password, cred.passwordHash))) {
+      // Block login for accounts pending HQ approval
+      const raw = asRaw(candidate.rawData);
+      if (raw.pending_hq_approval === true) {
+        throw new AuthError('PENDING_APPROVAL', 403);
+      }
+
+      return issueTokens(candidate);
+    }
   }
 
-  return issueTokens(profile);
+  throw new AuthError('Invalid credentials');
 }
 
 export async function refresh(

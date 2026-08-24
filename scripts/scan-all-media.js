@@ -6,7 +6,7 @@ const path = require('path');
 const sql = postgres(process.env.DATABASE_URL, {
   ssl: 'require',
   prepare: false,
-  max: 1,
+  max: 2,
 });
 
 function extractUrls(val) {
@@ -28,102 +28,52 @@ function extractUrls(val) {
 }
 
 async function run() {
-  console.log('Scanning all media tables in PostgreSQL with paginated batches...\n');
+  console.log('Scanning all media and song tables in PostgreSQL...\n');
   const allItems = [];
   const uniqueUrlSet = new Set();
 
-  // 1. ministered_songs (822 rows in batches of 300)
-  try {
-    let offset = 0;
-    while (true) {
-      const rows = await sql`SELECT id, audio_file, image_url, audio_urls FROM ministered_songs LIMIT 300 OFFSET ${offset}`;
-      if (!rows || rows.length === 0) break;
-      for (const r of rows) {
-        const urls = [
-          ...extractUrls(r.audio_file),
-          ...extractUrls(r.image_url),
-          ...extractUrls(r.audio_urls),
-        ];
-        urls.forEach(u => {
-          if (!uniqueUrlSet.has(u)) {
-            uniqueUrlSet.add(u);
-            allItems.push({ table: 'ministered_songs', id: r.id, url: u });
-          }
-        });
-      }
-      offset += rows.length;
-      if (rows.length < 300) break;
-    }
-    console.log(`✓ ministered_songs (${offset} rows scanned)`);
-  } catch (e) {
-    console.log('ministered_songs error:', e.message);
-  }
+  const tablesToScan = [
+    'media_videos',
+    'media_assets',
+    'zone_media_assets',
+    'ministered_songs',
+    'songs',
+    'praise_night_songs',
+    'profiles',
+    'programs'
+  ];
 
-  // 2. songs (2,478 rows in batches of 300)
-  try {
-    let offset = 0;
-    while (true) {
-      const rows = await sql`SELECT id, audio_file, audio_urls FROM songs LIMIT 300 OFFSET ${offset}`;
-      if (!rows || rows.length === 0) break;
-      for (const r of rows) {
-        const urls = [
-          ...extractUrls(r.audio_file),
-          ...extractUrls(r.audio_urls),
-        ];
-        urls.forEach(u => {
-          if (!uniqueUrlSet.has(u)) {
-            uniqueUrlSet.add(u);
-            allItems.push({ table: 'songs', id: r.id, url: u });
-          }
-        });
-      }
-      offset += rows.length;
-      if (rows.length < 300) break;
-    }
-    console.log(`✓ songs (${offset} rows scanned)`);
-  } catch (e) {
-    console.log('songs error:', e.message);
-  }
-
-  // 3. profiles
-  try {
-    const rows = await sql`SELECT id, avatar_url, raw_data FROM profiles`;
-    for (const r of rows) {
-      const urls = [...extractUrls(r.avatar_url), ...extractUrls(r.raw_data?.bannerUrl)];
-      urls.forEach(u => {
-        if (!uniqueUrlSet.has(u)) {
-          uniqueUrlSet.add(u);
-          allItems.push({ table: 'profiles', id: r.id, url: u });
+  for (const table of tablesToScan) {
+    try {
+      let offset = 0;
+      let totalFoundInTable = 0;
+      while (true) {
+        const rows = await sql.unsafe(`SELECT id, raw_data FROM "${table}" LIMIT 500 OFFSET ${offset}`);
+        if (!rows || rows.length === 0) break;
+        for (const r of rows) {
+          const urls = extractUrls(r.raw_data);
+          urls.forEach(u => {
+            if (!uniqueUrlSet.has(u)) {
+              uniqueUrlSet.add(u);
+              allItems.push({ table, id: r.id, url: u });
+              totalFoundInTable++;
+            }
+          });
         }
-      });
+        offset += rows.length;
+        if (rows.length < 500) break;
+      }
+      console.log(`✓ ${table}: ${offset} rows scanned (${totalFoundInTable} new Cloudinary URLs)`);
+    } catch (e) {
+      console.log(`- ${table}: ${e.message}`);
     }
-    console.log(`✓ profiles (${rows.length} rows)`);
-  } catch (e) {
-    console.log('profiles error:', e.message);
-  }
-
-  // 4. programs
-  try {
-    const rows = await sql`SELECT id, banner_image FROM programs`;
-    for (const r of rows) {
-      const urls = extractUrls(r.banner_image);
-      urls.forEach(u => {
-        if (!uniqueUrlSet.has(u)) {
-          uniqueUrlSet.add(u);
-          allItems.push({ table: 'programs', id: r.id, url: u });
-        }
-      });
-    }
-    console.log(`✓ programs (${rows.length} rows)`);
-  } catch (e) {
-    console.log('programs error:', e.message);
   }
 
   const outPath = path.join(__dirname, 'cloudinary_assets.json');
   fs.writeFileSync(outPath, JSON.stringify(allItems, null, 2), 'utf-8');
 
   console.log(`\n====================================================`);
-  console.log(`📊 TOTAL UNIQUE CLOUDINARY ASSETS: ${allItems.length}`);
+  console.log(`📊 TOTAL UNIQUE CLOUDINARY ASSETS FOUND: ${allItems.length}`);
   console.log(`💾 Saved asset list to: ${outPath}`);
   console.log(`====================================================`);
 
