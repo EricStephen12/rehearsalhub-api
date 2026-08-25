@@ -34,6 +34,7 @@ import supportRouter from './routes/support.routes';
 import uploadRouter from './routes/upload.routes';
 import momentsRouter from './routes/moments.routes';
 import { writesRouter } from './routes/writes.routes';
+import livekitRouter from './routes/livekit.routes';
 import { createWsServer } from './ws/wsServer';
 
 // Global process crash prevention
@@ -129,6 +130,10 @@ app.use('/upcoming-events', upcomingEventsRouter);
 app.use('/events', upcomingEventsRouter);
 app.use('/calendar-events', upcomingEventsRouter);
 
+// LiveKit token generation — used by mobile app (GET) and web portal (POST)
+// Returns a signed JWT token + server URL for joining a call room
+app.use('/livekit-token', livekitRouter);
+
 // Write endpoints — require JWT
 app.use('/', writesRouter);
 
@@ -154,6 +159,11 @@ app.get('/api/settings/:id', apiKeyAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
+});
+
+// Health check — used by mobile app to verify connectivity (no auth required)
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, ts: Date.now() });
 });
 
 // Global error handler

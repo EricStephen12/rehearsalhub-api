@@ -190,17 +190,18 @@ async function hydrateChats(chatRows: (typeof chats.$inferSelect)[]) {
   });
 }
 
-// GET /chats — chats for user or all chats for admin
+// GET /chats — chats for user (or all chats for admin if ?all=true)
 router.get('/', requireAuth, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const userId = auth.userId as string;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const showAll = isHqAdmin && req.query.all === 'true';
 
     const allRows = await db.select().from(chats).limit(500);
 
     let rows: (typeof chats.$inferSelect)[] = [];
-    if (isHqAdmin) {
+    if (showAll) {
       rows = allRows;
     } else {
       rows = allRows.filter((r) => {

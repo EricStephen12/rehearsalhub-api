@@ -11,6 +11,8 @@ import {
   programs,
   zonePrograms,
   songHistory,
+  userSongNotes,
+  mediaDoodles,
 } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
@@ -283,6 +285,38 @@ router.get('/subgroup-praise-nights/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[songs/subgroup-praise-nights/:id]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** GET /songs/notes/:songId — load the authenticated user's personal note for a song */
+router.get('/notes/:songId', requireAuth, async (req: any, res: any) => {
+  try {
+    const { songId } = req.params;
+    const userId = res.locals.auth?.userId;
+    if (!userId) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+
+    const rows = await db.select().from(userSongNotes).where(eq(userSongNotes.songId, songId));
+    const own = rows.find((r: any) => r.userId === userId);
+    if (own) {
+      res.json({ success: true, data: { notes: own.notes, id: own.id } });
+    } else {
+      res.json({ success: true, data: null });
+    }
+  } catch (err) {
+    console.error('[songs/notes/:songId:GET]', err);
+    res.status(500).json({ success: false, error: 'Failed to load notes' });
+  }
+});
+
+/** GET /songs/annotations/:songId — load all annotations (doodles) for a song */
+router.get('/annotations/:songId', requireAuth, async (req: any, res: any) => {
+  try {
+    const { songId } = req.params;
+    const rows = await db.select().from(mediaDoodles).where(eq(mediaDoodles.songId, songId));
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (err) {
+    console.error('[songs/annotations/:songId:GET]', err);
+    res.status(500).json({ success: false, error: 'Failed to load annotations' });
   }
 });
 

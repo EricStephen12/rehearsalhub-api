@@ -184,6 +184,80 @@ writesRouter.post('/chats/:chatId/messages', requireAuth, async (req, res) => {
   res.status(201).json({ success: true, data: msg });
 });
 
+// PATCH /chats/:chatId/messages/:msgId — edit text, star, or pin a message
+writesRouter.patch('/chats/:chatId/messages/:msgId', requireAuth, async (req, res) => {
+  const { chatId, msgId } = req.params;
+  const auth = res.locals.auth;
+
+  const schema = z.object({
+    content: z.string().min(1).optional(),
+    edited: z.boolean().optional(),
+    starred: z.boolean().optional(),
+    pinned: z.boolean().optional(),
+  }).refine(b => Object.keys(b).length > 0, { message: 'Empty body' });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
+
+  const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, chatId)).limit(1);
+  if (!chat) { notFound(res); return; }
+  if (!chatMemberIds(chat).includes(auth.userId)) { forbidden(res); return; }
+
+  const [msg] = await db.select().from(messagesV2).where(eq(messagesV2.id, msgId)).limit(1);
+  if (!msg) { notFound(res); return; }
+
+  // Only the sender can edit or the text content; anyone in the chat can star/pin their copy
+  if (parsed.data.content !== undefined && msg.senderId !== auth.userId) { forbidden(res); return; }
+
+  const prevRaw = msg.rawData && typeof msg.rawData === 'object' ? (msg.rawData as Record<string, unknown>) : {};
+  const [updated] = await db.update(messagesV2)
+    .set({
+      ...(parsed.data.content !== undefined ? { text: parsed.data.content, edited: true } : {}),
+      rawData: {
+        ...prevRaw,
+        ...(parsed.data.starred !== undefined ? { starred: parsed.data.starred } : {}),
+        ...(parsed.data.pinned !== undefined ? { pinned: parsed.data.pinned } : {}),
+      },
+    })
+    .where(eq(messagesV2.id, msgId))
+    .returning();
+
+  // Broadcast edit so all open chat clients update in real-time
+  broadcast('messages', chatId, {
+    type: 'edit',
+    messageId: msgId,
+    text: updated.text,
+    edited: updated.edited,
+    rawData: updated.rawData,
+  });
+  res.json({ success: true, data: updated });
+});
+
+// DELETE /chats/:chatId/messages/:msgId — soft-delete (sender only)
+writesRouter.delete('/chats/:chatId/messages/:msgId', requireAuth, async (req, res) => {
+  const { chatId, msgId } = req.params;
+  const auth = res.locals.auth;
+
+  const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, chatId)).limit(1);
+  if (!chat) { notFound(res); return; }
+  if (!chatMemberIds(chat).includes(auth.userId)) { forbidden(res); return; }
+
+  const [msg] = await db.select().from(messagesV2).where(eq(messagesV2.id, msgId)).limit(1);
+  if (!msg) { notFound(res); return; }
+  if (msg.senderId !== auth.userId) { forbidden(res); return; }
+
+  const prevRaw = msg.rawData && typeof msg.rawData === 'object' ? (msg.rawData as Record<string, unknown>) : {};
+  await db.update(messagesV2)
+    .set({
+      text: 'This message was deleted',
+      rawData: { ...prevRaw, deleted: true, deletedAt: new Date().toISOString() },
+    })
+    .where(eq(messagesV2.id, msgId));
+
+  // Broadcast delete event so all clients immediately show "deleted" state
+  broadcast('messages', chatId, { type: 'delete', messageId: msgId });
+  res.json({ success: true });
+});
+
 writesRouter.patch('/calls/:callId', requireAuth, async (req, res) => {
   const { callId } = req.params;
   const auth = res.locals.auth;

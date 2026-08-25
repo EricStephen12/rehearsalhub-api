@@ -133,6 +133,7 @@ export const subgroupPrograms = pgTable('subgroup_programs', {
   id: text('id').primaryKey(),
   name: text('name'),
   date: text('date'),
+  location: text('location'),
   zoneId: text('zone_id'),
   subGroupId: text('sub_group_id'),
   subGroupName: text('sub_group_name'),
@@ -300,12 +301,39 @@ export const adminRequests = pgTable('admin_requests', {
 /**
  * SUBGROUPS
  * Internal sub-sections within a choir (e.g. Soprano, Alto, Tenor, Band).
+ * Also used for church/local assembly registrations requiring HQ approval.
  */
 export const subgroups = pgTable('subgroups', {
   id: text('id').primaryKey(),
   name: text('name'),
   zoneId: text('zone_id'),
   description: text('description'),
+  // Proper typed columns — previously all buried in rawData
+  type: text('type').default('subgroup'),           // 'church' | 'subgroup' | 'section'
+  status: text('status').default('active'),         // 'pending' | 'active' | 'rejected'
+  coordinatorId: text('coordinator_id'),
+  coordinatorName: text('coordinator_name'),
+  estimatedMembers: integer('estimated_members').default(0),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+  rawData: jsonb('raw_data'),
+});
+
+/**
+ * SUBGROUP MEMBERS
+ * Dedicated join table for subgroup membership.
+ * Replaces the old memberIds[] array stored inside subgroups.rawData.
+ */
+export const subgroupMembers = pgTable('subgroup_members', {
+  id: text('id').primaryKey(),
+  subgroupId: text('subgroup_id').notNull(),
+  userId: text('user_id').notNull(),
+  role: text('role').default('member'),             // 'member' | 'coordinator' | 'admin'
+  status: text('status').default('active'),         // 'active' | 'removed'
+  addedBy: text('added_by'),
+  joinedAt: timestamp('joined_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
   rawData: jsonb('raw_data'),
 });
 
