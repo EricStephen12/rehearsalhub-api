@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import https from 'https';
 import { requireAuth } from './auth.middleware';
 import {
   login,
@@ -178,6 +179,73 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
+// Native HTTPS helper to fetch KingsChat user profile from Developer API
+async function fetchKingsChatProfileNative(accessToken: string, apiKey: string): Promise<any> {
+  const hosts = [
+    { hostname: 'connect.kingsch.at', path: '/developer/api/user/profile' },
+    { hostname: 'connect.kingschat.online', path: '/developer/api/user/profile' },
+    { hostname: 'connect.kingsch.at', path: '/developer/api/profile' },
+    { hostname: 'connect.kingschat.online', path: '/developer/api/profile' },
+  ];
+
+  for (const h of hosts) {
+    try {
+      const data: any = await new Promise((resolve) => {
+        const req = https.request({
+          hostname: h.hostname,
+          port: 443,
+          path: h.path,
+          method: 'GET',
+          headers: {
+            'api-key': apiKey,
+            'X-Api-Key': apiKey,
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/json',
+          },
+          timeout: 8000,
+        }, (res) => {
+          let body = '';
+          res.on('data', chunk => { body += chunk; });
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                resolve(JSON.parse(body));
+              } catch {
+                resolve(null);
+              }
+            } else {
+              console.warn(`[KingsChat Verify] ${h.hostname}${h.path} returned HTTP ${res.statusCode}: ${body.substring(0, 150)}`);
+              resolve(null);
+            }
+          });
+        });
+
+        req.on('error', (err) => {
+          console.warn(`[KingsChat Verify Connection Error] ${h.hostname}:`, err.message);
+          resolve(null);
+        });
+
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(null);
+        });
+
+        req.end();
+      });
+
+      if (data) {
+        const p = data?.profile || data?.user || data?.data || data;
+        if (p && (p.id || p.userId || p.user_id)) {
+          return p;
+        }
+      }
+    } catch (e) {
+      // Continue to next host
+    }
+  }
+  return null;
+}
+
 // POST /auth/kingschat-login & /auth/kingschat
 const handleKingsChatLogin = async (req: any, res: any) => {
   const parsed = kingsChatLoginSchema.safeParse(req.body);
@@ -198,40 +266,14 @@ const handleKingsChatLogin = async (req: any, res: any) => {
     let verifiedEmail: string | null = email ? email.trim().toLowerCase() : (clientProfile?.email ? String(clientProfile.email).trim().toLowerCase() : null);
     let verifiedProfileData: any = clientProfile || null;
 
-    // 1. Verify with KingsChat Developer API endpoints
+    // 1. Verify with KingsChat Developer API
     const KINGSCHAT_API_KEY = process.env.KINGSCHAT_API_KEY || '';
-    const endpoints = [
-      'https://connect.kingsch.at/developer/api/user/profile',
-      'https://connect.kingsch.at/developer/api/profile',
-      'https://connect.kingschat.online/developer/api/user/profile',
-      'https://connect.kingschat.online/developer/api/profile',
-    ];
-
     if (KINGSCHAT_API_KEY) {
-      for (const endpoint of endpoints) {
-        try {
-          const kcRes = await fetch(endpoint, {
-            headers: {
-              'api-key': KINGSCHAT_API_KEY,
-              'X-Api-Key': KINGSCHAT_API_KEY,
-              'Authorization': `Bearer ${accessToken}`,
-              'Accept': 'application/json',
-            },
-          });
-
-          if (kcRes.ok) {
-            const kcData: any = await kcRes.json();
-            const p = kcData?.profile || kcData?.user || kcData?.data || kcData;
-            if (p?.id || p?.userId || p?.user_id) {
-              kcUserId = p.id || p.userId || p.user_id;
-              if (p.email) verifiedEmail = String(p.email).trim().toLowerCase();
-              verifiedProfileData = p;
-              break;
-            }
-          }
-        } catch (fetchErr) {
-          // continue to next endpoint
-        }
+      const p = await fetchKingsChatProfileNative(accessToken, KINGSCHAT_API_KEY);
+      if (p) {
+        kcUserId = p.id || p.userId || p.user_id || kcUserId;
+        if (p.email) verifiedEmail = String(p.email).trim().toLowerCase();
+        verifiedProfileData = p;
       }
     }
 
