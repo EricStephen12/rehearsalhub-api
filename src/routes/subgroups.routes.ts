@@ -26,9 +26,18 @@ function shapeSubgroup(row: typeof subgroups.$inferSelect) {
     zoneId: row.zoneId ?? (merged.zoneId as string | undefined) ?? (merged.zone_id as string | undefined),
     coordinatorId:
       (merged.coordinatorId as string | undefined) ||
-      (merged.coordinator_id as string | undefined),
+      (merged.coordinator_id as string | undefined) ||
+      row.coordinatorId,
+    coordinatorName:
+      (merged.coordinatorName as string | undefined) ||
+      (merged.coordinator_name as string | undefined) ||
+      row.coordinatorName,
+    coordinatorEmail:
+      (merged.coordinatorEmail as string | undefined) ||
+      (merged.coordinator_email as string | undefined),
     memberIds,
-    status: (merged.status as string | undefined) || 'active',
+    type: row.type || (merged.type as string | undefined) || 'church',
+    status: (merged.status as string | undefined) || row.status || 'active',
     description: row.description ?? (merged.description as string | undefined),
   };
 }
@@ -153,12 +162,23 @@ router.get('/', requireAuth, async (req: any, res) => {
       const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
       const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
 
-      rows = await db.select().from(subgroups).where(
-        sql`lower(replace(${subgroups.zoneId}, '-', '')) = ${withoutHyphen} OR 
-            lower(${subgroups.zoneId}) = ${withHyphen} OR 
-            lower(replace(${subgroups.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
-            lower(replace(${subgroups.rawData}->>'zone_id', '-', '')) = ${withoutHyphen}`
-      );
+      if (isHqAdmin) {
+        rows = await db.select().from(subgroups).where(
+          sql`lower(replace(${subgroups.zoneId}, '-', '')) = ${withoutHyphen} OR 
+              lower(${subgroups.zoneId}) = ${withHyphen} OR 
+              lower(replace(${subgroups.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+              lower(replace(${subgroups.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR
+              ${subgroups.status} = 'pending' OR
+              ${subgroups.rawData}->>'status' = 'pending'`
+        );
+      } else {
+        rows = await db.select().from(subgroups).where(
+          sql`lower(replace(${subgroups.zoneId}, '-', '')) = ${withoutHyphen} OR 
+              lower(${subgroups.zoneId}) = ${withHyphen} OR 
+              lower(replace(${subgroups.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
+              lower(replace(${subgroups.rawData}->>'zone_id', '-', '')) = ${withoutHyphen}`
+        );
+      }
     } else {
       rows = await db.select().from(subgroups);
     }
@@ -221,6 +241,11 @@ const handleCreateSubgroup = async (req: any, res: any) => {
       name: name.trim(),
       zoneId: zoneId || 'global',
       description: description.trim(),
+      type,
+      status: finalStatus,
+      coordinatorId: coordinatorId || userId,
+      coordinatorName: coordinatorName.trim() || auth.email || 'Coordinator',
+      createdBy: userId,
       rawData,
     });
 
@@ -267,6 +292,11 @@ const handleCreateSubgroup = async (req: any, res: any) => {
         name: name.trim(),
         zoneId: zoneId || 'global',
         description: description.trim(),
+        type,
+        status: finalStatus,
+        coordinatorId: coordinatorId || userId,
+        coordinatorName: coordinatorName.trim() || auth.email || 'Coordinator',
+        createdBy: userId,
         rawData,
       } as any),
     });
@@ -294,6 +324,7 @@ router.post('/:id/approve', requireAuth, async (req, res) => {
     raw.status = 'active';
 
     await db.update(subgroups).set({
+      status: 'active',
       rawData: raw,
     }).where(eq(subgroups.id, id));
 
@@ -336,6 +367,7 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
     raw.rejectReason = reason || 'Request rejected by admin';
 
     await db.update(subgroups).set({
+      status: 'rejected',
       rawData: raw,
     }).where(eq(subgroups.id, id));
 
