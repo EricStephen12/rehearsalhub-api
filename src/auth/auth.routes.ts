@@ -59,6 +59,10 @@ const resetPasswordSchema = z.object({
 
 const kingsChatLoginSchema = z.object({
   accessToken: z.string().min(1),
+  kingschatUserId: z.string().optional(),
+  email: z.string().optional(),
+  selectedEmail: z.string().optional(),
+  profile: z.any().optional(),
 });
 
 // POST /auth/register
@@ -255,10 +259,11 @@ const handleKingsChatLogin = async (req: any, res: any) => {
   }
 
   try {
-    const { accessToken, kingschatUserId, email, profile: clientProfile } = req.body as {
+    const { accessToken, kingschatUserId, email, selectedEmail, profile: clientProfile } = req.body as {
       accessToken: string;
       kingschatUserId?: string;
       email?: string;
+      selectedEmail?: string;
       profile?: any;
     };
 
@@ -344,7 +349,8 @@ const handleKingsChatLogin = async (req: any, res: any) => {
       return;
     }
 
-    if (matchingProfiles.length > 1 && !email) {
+    // If multiple profiles match and user has not explicitly chosen an email yet -> show chooser
+    if (matchingProfiles.length > 1 && !selectedEmail) {
       res.json({
         success: false,
         code: 'MULTIPLE_ACCOUNTS',
@@ -367,7 +373,9 @@ const handleKingsChatLogin = async (req: any, res: any) => {
       return;
     }
 
-    const profile = matchingProfiles[0];
+    const profile = selectedEmail
+      ? (matchingProfiles.find((p) => p.email && p.email.toLowerCase() === selectedEmail.toLowerCase()) || matchingProfiles[0])
+      : matchingProfiles[0];
 
     // 4. Auto-link KingsChat ID if not already explicitly attached
     if (kcUserId && profile.kingschatId !== kcUserId) {
