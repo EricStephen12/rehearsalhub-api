@@ -345,7 +345,25 @@ const handleKingsChatLogin = async (req: any, res: any) => {
     }
 
     if (matchingProfiles.length > 1 && !email) {
-      res.json({ success: false, code: 'MULTIPLE_ACCOUNTS', kingschatUserId: kcUserId, accounts: matchingProfiles });
+      res.json({
+        success: false,
+        code: 'MULTIPLE_ACCOUNTS',
+        kingschatUserId: kcUserId,
+        accounts: matchingProfiles.map((p) => ({
+          id: p.id,
+          email: p.email,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          role: p.role,
+          hasHqAccess: p.hasHqAccess,
+          avatarUrl: p.avatarUrl,
+          zoneCode:
+            (p.rawData as any)?.zoneCode ||
+            (p.rawData as any)?.zone_code ||
+            (p.rawData as any)?.zoneId ||
+            '',
+        })),
+      });
       return;
     }
 
