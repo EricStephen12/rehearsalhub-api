@@ -222,7 +222,16 @@ router.get('/', requireAuth, async (req: any, res) => {
 router.get('/mine', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId;
-    const rows = await db.select().from(submittedSongs).where(eq(submittedSongs.userId, userId));
+    const rows = await db
+      .select()
+      .from(submittedSongs)
+      .where(
+        or(
+          eq(submittedSongs.userId, userId),
+          sql`${submittedSongs.rawData}->>'user_id' = ${userId}`,
+          sql`${submittedSongs.rawData}->>'userId' = ${userId}`,
+        )
+      );
     const data = rows.map(shapeSubmission).sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
     res.json({ success: true, count: data.length, data });
   } catch (err) {
