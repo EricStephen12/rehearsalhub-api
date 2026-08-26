@@ -165,7 +165,9 @@ router.get('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
-    const effectiveZoneId = (req.query.zoneId && req.query.zoneId !== 'all') ? String(req.query.zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+    const effectiveZoneId = req.tenant?.effectiveZoneId !== undefined
+      ? req.tenant.effectiveZoneId
+      : ((req.query.zoneId && req.query.zoneId !== 'all') ? String(req.query.zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null));
 
     let rows: any[] = [];
     if (effectiveZoneId && effectiveZoneId !== 'all') {

@@ -267,14 +267,41 @@ router.post('/', requireAuth, async (req, res) => {
       ? rawList
       : [...rawList, auth.userId];
 
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
+    const requestedId = (req.body.id || req.body.chatId || (zone_id && type === 'group' ? `group_zone_${zone_id}` : null)) as string | null;
+    const id = requestedId || crypto.randomUUID();
+    const effectiveZoneId = zone_id || (req.tenant?.effectiveZoneId ?? null);
 
+    // If chat already exists (e.g. deterministic zone group or subgroup room), merge participants and return
+    const [existing] = await db.select().from(chats).where(eq(chats.id, id)).limit(1);
+    if (existing) {
+      const prevParticipants = Array.isArray(existing.participants) ? existing.participants : [];
+      const mergedParticipants = Array.from(new Set([...prevParticipants, ...participants]));
+      const prevRaw = (existing.rawData && typeof existing.rawData === 'object') ? (existing.rawData as Record<string, any>) : {};
+
+      const [updated] = await db.update(chats)
+        .set({
+          participants: mergedParticipants,
+          rawData: {
+            ...prevRaw,
+            participants: mergedParticipants,
+            zoneId: effectiveZoneId || prevRaw.zoneId,
+            updatedAt: new Date().toISOString(),
+          },
+        })
+        .where(eq(chats.id, id))
+        .returning();
+
+      const [hydrated] = await hydrateChats([updated]);
+      broadcast('chat', updated.id, hydrated);
+      return res.status(200).json({ success: true, data: hydrated });
+    }
+
+    const now = new Date().toISOString();
     const rawData = {
       id,
       name,
       type,
-      zoneId: zone_id,
+      zoneId: effectiveZoneId,
       participants,
       createdBy: auth.userId,
       createdAt: now,
