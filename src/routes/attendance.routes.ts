@@ -56,13 +56,16 @@ router.get('/', requireAuth, async (req: any, res) => {
     const auth = res.locals.auth;
     const { zoneId, date, subGroupId } = req.query;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
-    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+    const effectiveZoneId = req.tenant?.effectiveZoneId !== undefined
+      ? req.tenant.effectiveZoneId
+      : ((zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null));
+    const effectiveChurchId = req.tenant?.effectiveChurchId || (subGroupId ? String(subGroupId) : null);
 
     let rows: any[] = [];
-    if (subGroupId) {
+    if (effectiveChurchId) {
       rows = await db.select().from(attendance).where(
-        sql`${attendance.rawData}->>'subGroupId' = ${String(subGroupId)} OR
-            ${attendance.rawData}->>'sub_group_id' = ${String(subGroupId)}`
+        sql`${attendance.rawData}->>'subGroupId' = ${String(effectiveChurchId)} OR
+            ${attendance.rawData}->>'sub_group_id' = ${String(effectiveChurchId)}`
       );
     } else if (effectiveZoneId && effectiveZoneId !== 'all') {
       const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();

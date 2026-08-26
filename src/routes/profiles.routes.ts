@@ -206,8 +206,10 @@ router.get('/directory', requireAuth, async (req, res) => {
   }
 
   const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || !!auth.hasHqAccess;
-  const requestedZoneCode = typeof req.query.zone_code === 'string' ? req.query.zone_code.trim() : null;
-  const targetZone = (requestedZoneCode && requestedZoneCode !== 'all') ? requestedZoneCode : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+  const requestedZoneCode = typeof req.query.zone_code === 'string' ? req.query.zone_code.trim() : (typeof req.query.zoneId === 'string' ? req.query.zoneId.trim() : null);
+  const targetZone = (req as any).tenant?.effectiveZoneId !== undefined
+    ? (req as any).tenant.effectiveZoneId
+    : ((requestedZoneCode && requestedZoneCode !== 'all') ? requestedZoneCode : (!isHqAdmin ? (auth.zoneId as string | null) : null));
 
   if (targetZone) {
     const withoutHyphen = targetZone.replace(/-/g, '').toLowerCase();

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, JsonWebTokenError, TokenExpiredError } from './token';
 import { revocationStore } from './revocation';
+import { resolveTenantScope, withTenantTransaction } from '../middleware/tenant.middleware';
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
@@ -22,7 +23,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
     const activeZoneHeader = (req.headers['x-zone-id'] as string) || (req.headers['x-zone-code'] as string) || (req.query.zoneId as string) || (req.query.zone_code as string);
 
-    res.locals.auth = {
+    const authData = {
       userId: payload.sub,
       role: payload.role,
       /** zoneId from JWT claim — this is the source of truth, not the header */
@@ -33,7 +34,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
       exp: payload.exp!,
     };
 
-    next();
+    res.locals.auth = authData;
+    req.tenant = resolveTenantScope(req, authData);
+
+    withTenantTransaction(req, res, req.tenant, next);
   } catch (err) {
     if (err instanceof TokenExpiredError || err instanceof JsonWebTokenError) {
       res.status(401).json({ success: false, error: 'Unauthorized' });

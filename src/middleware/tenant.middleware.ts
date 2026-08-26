@@ -49,13 +49,17 @@ const HQ_ROLES = new Set(['hq_admin', 'admin', 'super_admin']);
  *
  * Attaches req.tenant so all route handlers can use it directly without re-deriving scope.
  */
-export function tenantMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const auth = (res as any).locals?.auth;
-
-  // If requireAuth hasn't run (public route), skip tenancy resolution
+export function resolveTenantScope(req: Request, auth: any): TenantScope {
   if (!auth) {
-    next();
-    return;
+    return {
+      mode: 'global',
+      effectiveZoneId: null,
+      effectiveChurchId: null,
+      isHQAdmin: false,
+      isZoneAdmin: false,
+      isChurchCoordinator: false,
+      isGlobalView: true,
+    };
   }
 
   const role: string = (auth.role || '').toLowerCase();
@@ -96,13 +100,11 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
     }
   } else if (isChurchCoordinator) {
     // Church coordinators are HARD-LOCKED to their JWT churchId.
-    // Any header trying to escalate to zone or global view is IGNORED.
     effectiveChurchId = auth.churchId || null;
     effectiveZoneId = auth.zoneId || null;
     mode = 'church';
   } else if (isZoneAdmin) {
     // Zone admins are HARD-LOCKED to their JWT zoneId.
-    // Any header trying to escalate to global view is IGNORED.
     effectiveZoneId = auth.zoneId || null;
     effectiveChurchId = null;
     mode = effectiveZoneId ? 'zone' : 'global';
@@ -113,7 +115,7 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
     mode = effectiveZoneId ? 'zone' : 'global';
   }
 
-  req.tenant = {
+  return {
     mode,
     effectiveZoneId,
     effectiveChurchId,
@@ -122,6 +124,57 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
     isChurchCoordinator,
     isGlobalView: mode === 'global',
   };
+}
 
+import { sql } from 'drizzle-orm';
+import { baseDb, dbStorage } from '../db';
+
+export function withTenantTransaction(
+  req: Request,
+  res: Response,
+  tenant: TenantScope,
+  next: NextFunction
+): void {
+  // If non-HQ role has no effectiveZoneId on a restricted route, reject immediately with 403
+  if (!tenant.isHQAdmin && !tenant.effectiveZoneId) {
+    res.status(403).json({ success: false, error: 'Forbidden: Missing tenant zone scope' });
+    return;
+  }
+
+  baseDb.transaction(async (tx) => {
+    const zoneVal = tenant.effectiveZoneId || '';
+    const isHqVal = tenant.isHQAdmin || tenant.isGlobalView ? 'true' : 'false';
+    const churchVal = tenant.effectiveChurchId || '';
+
+    await tx.execute(sql`
+      SELECT 
+        set_config('app.current_zone_id', ${zoneVal}, true),
+        set_config('app.is_hq', ${isHqVal}, true),
+        set_config('app.current_church_id', ${churchVal}, true);
+    `);
+
+    await dbStorage.run(tx as any, async () => {
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => resolve();
+        res.once('finish', cleanup);
+        res.once('close', cleanup);
+        try {
+          next();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }).catch((txErr) => {
+    if (!res.headersSent) {
+      console.error('[withTenantTransaction Error]:', txErr);
+      res.status(500).json({ success: false, error: 'Tenant transaction failure' });
+    }
+  });
+}
+
+export function tenantMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const auth = (res as any).locals?.auth;
+  req.tenant = resolveTenantScope(req, auth);
   next();
 }

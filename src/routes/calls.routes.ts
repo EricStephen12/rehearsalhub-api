@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, or, desc } from 'drizzle-orm';
+import { eq, or, desc, and, inArray } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
 import { calls } from '../schema';
@@ -7,6 +7,8 @@ import { requireAuth } from '../auth/auth.middleware';
 import { broadcast } from '../ws/wsServer';
 
 const router = Router();
+
+import { profiles } from '../schema';
 
 // GET /calls — Call history for current user
 router.get('/', requireAuth, async (req, res) => {
@@ -16,7 +18,32 @@ router.get('/', requireAuth, async (req, res) => {
       .where(or(eq(calls.callerId, auth.userId), eq(calls.receiverId, auth.userId)))
       .orderBy(desc(calls.createdAt))
       .limit(50);
-    res.json({ success: true, data: userCalls });
+
+    const userIds = Array.from(new Set(userCalls.flatMap(c => [c.callerId, c.receiverId]).filter(Boolean)));
+    const profileMap: Record<string, { name: string; avatar: string | null }> = {};
+    if (userIds.length > 0) {
+      const userProfiles = await db.select().from(profiles).where(inArray(profiles.id, userIds));
+      for (const p of userProfiles) {
+        const raw = (p.rawData && typeof p.rawData === 'object') ? (p.rawData as any) : {};
+        const name = [p.firstName, p.lastName].filter(Boolean).join(' ') || raw.name || raw.displayName || p.email || 'Member';
+        const avatar = p.avatarUrl || raw.avatar || raw.profile_image_url || null;
+        profileMap[p.id] = { name, avatar };
+      }
+    }
+
+    const enrichedCalls = userCalls.map(c => {
+      const callerProf = profileMap[c.callerId];
+      const receiverProf = profileMap[c.receiverId];
+      return {
+        ...c,
+        callerName: (c.callerName && c.callerName !== 'Caller') ? c.callerName : (callerProf?.name || c.callerName || 'Caller'),
+        callerAvatar: c.callerAvatar || callerProf?.avatar || null,
+        receiverName: receiverProf?.name || 'Member',
+        receiverAvatar: receiverProf?.avatar || null,
+      };
+    });
+
+    res.json({ success: true, data: enrichedCalls });
   } catch (err) {
     console.error('[calls:get]', err);
     res.status(500).json({ success: false, error: 'Failed to load call history' });
@@ -150,6 +177,46 @@ router.post('/:callId/signal', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[calls/:id/signal]', err);
     res.status(500).json({ success: false, error: 'Failed to send signal' });
+  }
+});
+
+// DELETE /calls/:callId — Delete a specific call log
+router.delete('/:callId', requireAuth, async (req, res) => {
+  try {
+    const { callId } = req.params;
+    const auth = res.locals.auth;
+
+    await db.delete(calls).where(
+      and(
+        eq(calls.id, callId),
+        or(eq(calls.callerId, auth.userId), eq(calls.receiverId, auth.userId))
+      )
+    );
+    res.json({ success: true, message: 'Call log deleted' });
+  } catch (err) {
+    console.error('[calls/:id:delete]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete call log' });
+  }
+});
+
+// DELETE /calls — Batch delete call logs
+router.delete('/', requireAuth, async (req, res) => {
+  try {
+    const { ids } = req.body;
+    const auth = res.locals.auth;
+
+    if (Array.isArray(ids) && ids.length > 0) {
+      await db.delete(calls).where(
+        and(
+          inArray(calls.id, ids),
+          or(eq(calls.callerId, auth.userId), eq(calls.receiverId, auth.userId))
+        )
+      );
+    }
+    res.json({ success: true, message: 'Call logs deleted' });
+  } catch (err) {
+    console.error('[calls:batchDelete]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete call logs' });
   }
 });
 
