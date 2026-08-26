@@ -178,8 +178,8 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
-// POST /auth/kingschat-login
-router.post('/kingschat-login', async (req, res) => {
+// POST /auth/kingschat-login & /auth/kingschat
+const handleKingsChatLogin = async (req: any, res: any) => {
   const parsed = kingsChatLoginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: 'Invalid request body' });
@@ -189,41 +189,86 @@ router.post('/kingschat-login', async (req, res) => {
   try {
     const { accessToken, kingschatUserId, email } = req.body as { accessToken: string; kingschatUserId?: string; email?: string };
 
-    // Fetch KingsChat user profile via local proxy or token decode
     let kcUserId: string | null = kingschatUserId ?? null;
+    let verifiedEmail: string | null = email ? email.trim().toLowerCase() : null;
+    let verifiedProfileData: any = null;
+
+    // 1. Verify with KingsChat Developer API
+    try {
+      const KINGSCHAT_API_KEY = process.env.KINGSCHAT_API_KEY || '';
+      if (KINGSCHAT_API_KEY) {
+        const kcRes = await fetch('https://connect.kingsch.at/developer/api/user/profile', {
+          headers: {
+            'api-key': KINGSCHAT_API_KEY,
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/json',
+          },
+        });
+
+        if (kcRes.ok) {
+          const kcData: any = await kcRes.json();
+          const p = kcData?.profile || kcData;
+          if (p?.id) kcUserId = p.id;
+          if (p?.email) verifiedEmail = p.email.trim().toLowerCase();
+          verifiedProfileData = p;
+        }
+      }
+    } catch (fetchErr) {
+      console.warn('[KingsChat API Verify Warning]:', fetchErr);
+    }
+
+    // 2. Decode JWT if kcUserId not found yet
     if (!kcUserId) {
       try {
-        // Attempt to decode JWT to extract userId
         const parts = accessToken.split('.');
         if (parts.length === 3) {
           const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
           kcUserId = payload.userId || payload.sub || payload.id || null;
+          if (payload.email && !verifiedEmail) verifiedEmail = payload.email.trim().toLowerCase();
         }
       } catch {}
     }
 
-    if (!kcUserId) {
+    if (!kcUserId && !verifiedEmail) {
       res.status(400).json({ success: false, error: 'Could not identify KingsChat user' });
       return;
     }
 
-    const { eq } = await import('drizzle-orm');
+    const { eq, or, sql } = await import('drizzle-orm');
     const { db } = await import('../db');
     const { profiles } = await import('../schema');
 
-    // Look up by KingsChat ID (and optionally email for multi-account) — profiles only
-    let matchingProfiles;
-    if (email) {
-      const { sql } = await import('drizzle-orm');
-      matchingProfiles = await db.select().from(profiles)
-        .where(sql`lower(${profiles.email}) = ${email.toLowerCase()}`).limit(5);
-    } else {
-      matchingProfiles = await db.select().from(profiles)
-        .where(eq(profiles.kingschatId, kcUserId)).limit(5);
+    // 3. Robust Multi-level Profile Lookup:
+    // Match by kingschatId column OR rawData jsonb OR verified email
+    const conditions = [];
+    if (kcUserId) {
+      conditions.push(eq(profiles.kingschatId, kcUserId));
+      conditions.push(sql`${profiles.rawData}->>'kingschatId' = ${kcUserId}`);
+      conditions.push(sql`${profiles.rawData}->>'kingschat_id' = ${kcUserId}`);
+    }
+    if (verifiedEmail) {
+      conditions.push(sql`lower(${profiles.email}) = ${verifiedEmail}`);
     }
 
+    let matchingProfiles = await db
+      .select()
+      .from(profiles)
+      .where(or(...conditions))
+      .limit(5);
+
     if (matchingProfiles.length === 0) {
-      res.json({ success: false, code: 'NO_ACCOUNT', kingschatUserId: kcUserId, profile: null });
+      res.json({
+        success: false,
+        code: 'NO_ACCOUNT',
+        kingschatUserId: kcUserId,
+        profile: verifiedProfileData ? {
+          kingschatId: kcUserId,
+          email: verifiedEmail || '',
+          firstName: verifiedProfileData.name?.split(' ')[0] || '',
+          lastName: verifiedProfileData.name?.split(' ').slice(1).join(' ') || '',
+          username: verifiedProfileData.username || '',
+        } : null,
+      });
       return;
     }
 
@@ -233,16 +278,44 @@ router.post('/kingschat-login', async (req, res) => {
     }
 
     const profile = matchingProfiles[0];
+
+    // 4. Auto-link KingsChat ID if not already explicitly attached
+    if (kcUserId && profile.kingschatId !== kcUserId) {
+      try {
+        const prevRaw = (profile.rawData && typeof profile.rawData === 'object' ? profile.rawData : {}) as Record<string, any>;
+        await db.update(profiles)
+          .set({
+            kingschatId: kcUserId,
+            rawData: { ...prevRaw, kingschatId: kcUserId, kingschat_id: kcUserId },
+          })
+          .where(eq(profiles.id, profile.id));
+      } catch (linkErr) {
+        console.error('[KingsChat auto-link error]:', linkErr);
+      }
+    }
+
     const tokens = await issueTokensForProfile(profile);
 
     res.json({
       success: true,
       data: tokens,
+      profile: {
+        id: profile.id,
+        email: profile.email,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        role: profile.role,
+        hasHqAccess: profile.hasHqAccess,
+      },
     });
-  } catch {
-    res.status(500).json({ success: false, error: 'An error occurred' });
+  } catch (err: any) {
+    console.error('[auth/kingschat error]', err);
+    res.status(500).json({ success: false, error: 'An error occurred during KingsChat login, Kindly try again' });
   }
-});
+};
+
+router.post('/kingschat-login', handleKingsChatLogin);
+router.post('/kingschat', handleKingsChatLogin);
 
 // In-memory store for 6-digit password reset OTPs (email -> { otp, expiresAt })
 const otpStore = new Map<string, { otp: string; expiresAt: number }>();
