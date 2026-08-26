@@ -42,7 +42,7 @@ function shapeSubgroup(row: typeof subgroups.$inferSelect) {
   };
 }
 
-/** GET /subgroups/mine — subgroups where caller is in memberIds (raw_data). */
+/** GET /subgroups/mine */
 router.get('/mine', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
@@ -50,7 +50,12 @@ router.get('/mine', requireAuth, async (_req, res) => {
       .select()
       .from(subgroups)
       .where(
-        sql`(${subgroups.rawData}::jsonb -> 'memberIds') ? ${userId}
+        sql`${subgroups.coordinatorId} = ${userId}
+            OR ${subgroups.createdBy} = ${userId}
+            OR ${subgroups.rawData}->>'coordinatorId' = ${userId}
+            OR ${subgroups.rawData}->>'coordinator_id' = ${userId}
+            OR ${subgroups.rawData}->>'createdBy' = ${userId}
+            OR (${subgroups.rawData}::jsonb -> 'memberIds') ? ${userId}
             OR (${subgroups.rawData}::jsonb -> 'member_ids') ? ${userId}`,
       );
     res.json({ success: true, data: rows.map(shapeSubgroup) });
@@ -68,7 +73,9 @@ router.get('/member-rehearsals', requireAuth, async (_req, res) => {
       .select({ id: subgroups.id })
       .from(subgroups)
       .where(
-        sql`(${subgroups.rawData}::jsonb -> 'memberIds') ? ${userId}
+        sql`${subgroups.coordinatorId} = ${userId}
+            OR ${subgroups.createdBy} = ${userId}
+            OR (${subgroups.rawData}::jsonb -> 'memberIds') ? ${userId}
             OR (${subgroups.rawData}::jsonb -> 'member_ids') ? ${userId}`
       );
     if (sgs.length === 0) {
@@ -95,10 +102,13 @@ router.get('/coordinated', requireAuth, async (_req, res) => {
       .select()
       .from(subgroups)
       .where(
-        sql`${subgroups.rawData}->>'coordinatorId' = ${userId}
-            OR ${subgroups.rawData}->>'coordinator_id' = ${userId}`,
+        sql`${subgroups.coordinatorId} = ${userId}
+            OR ${subgroups.createdBy} = ${userId}
+            OR ${subgroups.rawData}->>'coordinatorId' = ${userId}
+            OR ${subgroups.rawData}->>'coordinator_id' = ${userId}
+            OR ${subgroups.rawData}->>'createdBy' = ${userId}`,
       );
-    const data = rows.map(shapeSubgroup).filter((sg) => sg.status === 'active' || !sg.status);
+    const data = rows.map(shapeSubgroup);
     res.json({ success: true, data });
   } catch (err) {
     console.error('[subgroups/coordinated]', err);
