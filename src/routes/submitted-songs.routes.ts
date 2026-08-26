@@ -146,7 +146,12 @@ router.get('/', requireAuth, async (req: any, res) => {
     const { zoneId, status, mine } = req.query;
 
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
-    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
+    const isZoneAdmin = auth.role === 'zone_admin';
+    const isChurchCoordinator = auth.role === 'church_coordinator';
+
+    const effectiveZoneId = req.tenant?.effectiveZoneId !== undefined
+      ? req.tenant.effectiveZoneId
+      : ((zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null));
 
     const HQ_GROUP_IDS = new Set([
       'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
@@ -155,9 +160,11 @@ router.get('/', requireAuth, async (req: any, res) => {
     ]);
 
     let rows: any[] = [];
-    if (mine === 'true' || auth.role === 'user' || auth.role === 'member') {
+    if (mine === 'true' || (!isHqAdmin && !isZoneAdmin && !isChurchCoordinator)) {
+      // Regular singer / member viewing their own submissions
       rows = await db.select().from(submittedSongs).where(eq(submittedSongs.userId, auth.userId));
     } else if (effectiveZoneId && !HQ_GROUP_IDS.has(effectiveZoneId.toLowerCase().trim())) {
+      // Zonal / Church Coordinator or HQ Admin inspecting specific zone
       const cleanZone = effectiveZoneId.toLowerCase().trim();
       const withoutHyphen = cleanZone.replace(/[\s-_]/g, '');
       const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
@@ -237,7 +244,8 @@ router.post('/', requireAuth, async (req: any, res) => {
 
     const fullName = [userProfile?.firstName, userProfile?.lastName].filter(Boolean).join(' ') || (rawProfile.first_name ? `${rawProfile.first_name} ${rawProfile.last_name || ''}` : '') || auth.email;
     const userEmail = userProfile?.email || auth.email || '';
-    const userZone = req.body.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
+    const userZone = req.tenant?.effectiveZoneId || req.body.zoneId || auth.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
+    const userZoneName = req.body.zoneName || req.tenant?.effectiveZoneId || userZone;
 
     const submissionRaw = {
       id,
@@ -255,7 +263,7 @@ router.post('/', requireAuth, async (req: any, res) => {
       notes: req.body.notes?.trim() || '',
       audioUrl: req.body.audioUrl || req.body.audio_url || null,
       zoneId: userZone,
-      zoneName: req.body.zoneName || 'Assigned Zone',
+      zoneName: userZoneName,
       submittedBy: fullName,
       submittedByEmail: userEmail,
       status: 'pending',
