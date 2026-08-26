@@ -8,13 +8,15 @@ export interface AccessTokenPayload extends JwtPayload {
   sub: string;
   role: string;
   zoneId?: string;
+  /** Set for church_coordinator role — the subgroup/church they administer */
+  churchId?: string;
   jti: string;
 }
 
-export function signAccessToken(payload: { sub: string; role: string; zoneId?: string }): string {
+export function signAccessToken(payload: { sub: string; role: string; zoneId?: string; churchId?: string }): string {
   if (!secret) throw new Error('JWT_SECRET is not set');
   return jwt.sign(
-    { sub: payload.sub, role: payload.role, zoneId: payload.zoneId, jti: crypto.randomUUID() },
+    { sub: payload.sub, role: payload.role, zoneId: payload.zoneId, churchId: payload.churchId, jti: crypto.randomUUID() },
     secret,
     { algorithm: 'HS256', expiresIn },
   );

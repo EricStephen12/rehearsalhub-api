@@ -36,6 +36,7 @@ import momentsRouter from './routes/moments.routes';
 import { writesRouter } from './routes/writes.routes';
 import livekitRouter from './routes/livekit.routes';
 import { createWsServer } from './ws/wsServer';
+import { tenantMiddleware } from './middleware/tenant.middleware';
 
 // Global process crash prevention
 process.on('unhandledRejection', (reason, promise) => {
@@ -64,6 +65,8 @@ const limiter = rateLimit({
 app.use(cors());
 app.use(express.json());
 app.use(limiter);
+// Tenant scope middleware — runs globally after auth, resolves req.tenant for every request
+app.use(tenantMiddleware);
 
 // Health check — no auth needed (Crucial for Railway zero-downtime health probes)
 app.get('/health', (_, res) => {

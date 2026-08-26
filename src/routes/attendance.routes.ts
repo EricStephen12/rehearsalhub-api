@@ -54,17 +54,27 @@ function shapeAttendance(row: any) {
 router.get('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
-    const { zoneId, date } = req.query;
+    const { zoneId, date, subGroupId } = req.query;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
     const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null);
 
     let rows: any[] = [];
-    if (effectiveZoneId && effectiveZoneId !== 'all') {
+    if (subGroupId) {
+      rows = await db.select().from(attendance).where(
+        sql`${attendance.rawData}->>'subGroupId' = ${String(subGroupId)} OR
+            ${attendance.rawData}->>'sub_group_id' = ${String(subGroupId)}`
+      );
+    } else if (effectiveZoneId && effectiveZoneId !== 'all') {
       const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
       const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
 
       rows = await db.select().from(attendance).where(
-        sql`lower(replace(${attendance.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${attendance.zoneId}) = ${withHyphen}`
+        sql`lower(replace(${attendance.zoneId}, '-', '')) = ${withoutHyphen} OR 
+            lower(${attendance.zoneId}) = ${withHyphen} OR
+            lower(replace(${attendance.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR
+            lower(replace(${attendance.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR
+            lower(${attendance.rawData}->>'zoneId') = ${withHyphen} OR
+            lower(${attendance.rawData}->>'zone_id') = ${withHyphen}`
       );
     } else {
       rows = await db.select().from(attendance);

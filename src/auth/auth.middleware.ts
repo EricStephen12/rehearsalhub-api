@@ -25,7 +25,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.locals.auth = {
       userId: payload.sub,
       role: payload.role,
-      zoneId: activeZoneHeader || payload.zoneId,
+      /** zoneId from JWT claim — this is the source of truth, not the header */
+      zoneId: payload.zoneId || activeZoneHeader || null,
+      /** churchId from JWT claim — set for church_coordinator role */
+      churchId: payload.churchId || null,
       jti: payload.jti,
       exp: payload.exp!,
     };
