@@ -264,7 +264,7 @@ const handleKingsChatLogin = async (req: any, res: any) => {
     const { profiles } = await import('../schema');
 
     // 3. Robust Multi-level Profile Lookup:
-    // Match by kingschatId column OR rawData jsonb OR verified email
+    // Match by kingschatId column OR rawData jsonb OR verified email OR rawData email
     const conditions = [];
     if (kcUserId) {
       conditions.push(eq(profiles.kingschatId, kcUserId));
@@ -273,6 +273,11 @@ const handleKingsChatLogin = async (req: any, res: any) => {
     }
     if (verifiedEmail) {
       conditions.push(sql`lower(${profiles.email}) = ${verifiedEmail}`);
+      conditions.push(sql`lower(${profiles.rawData}->>'email') = ${verifiedEmail}`);
+    }
+    if (verifiedProfileData?.username) {
+      const uname = String(verifiedProfileData.username).toLowerCase().trim();
+      conditions.push(sql`lower(${profiles.rawData}->>'username') = ${uname}`);
     }
 
     let matchingProfiles = await db
