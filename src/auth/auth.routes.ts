@@ -187,34 +187,52 @@ const handleKingsChatLogin = async (req: any, res: any) => {
   }
 
   try {
-    const { accessToken, kingschatUserId, email } = req.body as { accessToken: string; kingschatUserId?: string; email?: string };
+    const { accessToken, kingschatUserId, email, profile: clientProfile } = req.body as {
+      accessToken: string;
+      kingschatUserId?: string;
+      email?: string;
+      profile?: any;
+    };
 
-    let kcUserId: string | null = kingschatUserId ?? null;
-    let verifiedEmail: string | null = email ? email.trim().toLowerCase() : null;
-    let verifiedProfileData: any = null;
+    let kcUserId: string | null = kingschatUserId || clientProfile?.userId || clientProfile?.id || null;
+    let verifiedEmail: string | null = email ? email.trim().toLowerCase() : (clientProfile?.email ? String(clientProfile.email).trim().toLowerCase() : null);
+    let verifiedProfileData: any = clientProfile || null;
 
-    // 1. Verify with KingsChat Developer API
-    try {
-      const KINGSCHAT_API_KEY = process.env.KINGSCHAT_API_KEY || '';
-      if (KINGSCHAT_API_KEY) {
-        const kcRes = await fetch('https://connect.kingsch.at/developer/api/user/profile', {
-          headers: {
-            'api-key': KINGSCHAT_API_KEY,
-            'Authorization': `Bearer ${accessToken}`,
-            'Accept': 'application/json',
-          },
-        });
+    // 1. Verify with KingsChat Developer API endpoints
+    const KINGSCHAT_API_KEY = process.env.KINGSCHAT_API_KEY || '';
+    const endpoints = [
+      'https://connect.kingsch.at/developer/api/user/profile',
+      'https://connect.kingsch.at/developer/api/profile',
+      'https://connect.kingschat.online/developer/api/user/profile',
+      'https://connect.kingschat.online/developer/api/profile',
+    ];
 
-        if (kcRes.ok) {
-          const kcData: any = await kcRes.json();
-          const p = kcData?.profile || kcData;
-          if (p?.id) kcUserId = p.id;
-          if (p?.email) verifiedEmail = p.email.trim().toLowerCase();
-          verifiedProfileData = p;
+    if (KINGSCHAT_API_KEY) {
+      for (const endpoint of endpoints) {
+        try {
+          const kcRes = await fetch(endpoint, {
+            headers: {
+              'api-key': KINGSCHAT_API_KEY,
+              'X-Api-Key': KINGSCHAT_API_KEY,
+              'Authorization': `Bearer ${accessToken}`,
+              'Accept': 'application/json',
+            },
+          });
+
+          if (kcRes.ok) {
+            const kcData: any = await kcRes.json();
+            const p = kcData?.profile || kcData?.user || kcData?.data || kcData;
+            if (p?.id || p?.userId || p?.user_id) {
+              kcUserId = p.id || p.userId || p.user_id;
+              if (p.email) verifiedEmail = String(p.email).trim().toLowerCase();
+              verifiedProfileData = p;
+              break;
+            }
+          }
+        } catch (fetchErr) {
+          // continue to next endpoint
         }
       }
-    } catch (fetchErr) {
-      console.warn('[KingsChat API Verify Warning]:', fetchErr);
     }
 
     // 2. Decode JWT if kcUserId not found yet
@@ -225,12 +243,19 @@ const handleKingsChatLogin = async (req: any, res: any) => {
           const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
           kcUserId = payload.userId || payload.sub || payload.id || null;
           if (payload.email && !verifiedEmail) verifiedEmail = payload.email.trim().toLowerCase();
+          if (!verifiedProfileData) {
+            verifiedProfileData = {
+              name: payload.name || `${payload.given_name || ''} ${payload.family_name || ''}`.trim(),
+              username: payload.preferred_username || payload.username,
+              email: payload.email,
+            };
+          }
         }
       } catch {}
     }
 
     if (!kcUserId && !verifiedEmail) {
-      res.status(400).json({ success: false, error: 'Could not identify KingsChat user' });
+      res.status(400).json({ success: false, error: 'Could not identify KingsChat user token' });
       return;
     }
 
