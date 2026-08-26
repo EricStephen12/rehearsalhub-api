@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { eq, or, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { programs, zonePrograms } from '../schema';
+import { programs, zonePrograms, songs } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
@@ -85,7 +85,41 @@ function getProgramTimestamp(p: any): number {
   return 0;
 }
 
-    let data = rows.sort((a, b) => {
+    // Fetch real song counts from the songs table grouped by praiseNightId
+    let songCountMap = new Map<string, number>();
+    try {
+      const songCountRows = await db
+        .select({
+          praiseNightId: songs.praiseNightId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(songs)
+        .groupBy(songs.praiseNightId);
+      for (const sc of songCountRows) {
+        if (sc.praiseNightId) {
+          songCountMap.set(sc.praiseNightId, Number(sc.count));
+        }
+      }
+    } catch (e) {
+      console.warn('[programs] Failed to query song counts:', e);
+    }
+
+    let data = rows.map((p) => {
+      const dbCount = songCountMap.get(p.id) || 0;
+      const raw = (p.rawData && typeof p.rawData === 'object' ? p.rawData : {}) as any;
+      const arrayCount = Array.isArray(p.songs) ? p.songs.length :
+                         Array.isArray(raw.songs) ? raw.songs.length :
+                         Array.isArray(p.songIds) ? p.songIds.length :
+                         Array.isArray(raw.songIds) ? raw.songIds.length :
+                         Array.isArray(p.song_ids) ? p.song_ids.length :
+                         Array.isArray(raw.song_ids) ? raw.song_ids.length : 0;
+      const effectiveCount = Math.max(dbCount, arrayCount, Number(p.songCount || raw.songCount || p.song_count || raw.song_count || 0));
+      return {
+        ...p,
+        songCount: effectiveCount,
+        song_count: effectiveCount,
+      };
+    }).sort((a, b) => {
       if (a.category === 'ongoing' && b.category !== 'ongoing') return -1;
       if (a.category !== 'ongoing' && b.category === 'ongoing') return 1;
       return getProgramTimestamp(b) - getProgramTimestamp(a);
