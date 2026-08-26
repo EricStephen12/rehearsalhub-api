@@ -415,6 +415,77 @@ router.patch('/read-all', requireAuth, async (req, res) => {
   }
 });
 
+/** POST /notifications/mark-read — mark a single notification read (alias) */
+router.post('/mark-read', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const notifId = req.body.notificationId || req.body.id;
+    if (!notifId) {
+      res.status(400).json({ success: false, error: 'notificationId is required' });
+      return;
+    }
+
+    const receiptId = `${userId}_${notifId}`;
+    const [existing] = await db
+      .select()
+      .from(userNotifications)
+      .where(eq(userNotifications.id, receiptId))
+      .limit(1);
+
+    if (!existing) {
+      await db.insert(userNotifications).values({
+        id: receiptId,
+        rawData: {
+          user_id: userId,
+          notification_id: notifId,
+          read_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    res.json({ success: true, message: 'Notification marked as read' });
+  } catch (err) {
+    console.error('[notifications/mark-read POST]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+/** POST /notifications/mark-all-read — mark all notifications read (alias) */
+router.post('/mark-all-read', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const notifRows = await db.select({ id: notifications.id }).from(notifications);
+
+    const existingReceipts = await db
+      .select({ id: userNotifications.id })
+      .from(userNotifications)
+      .where(sql`${userNotifications.id} LIKE ${userId + '_%'}`);
+    const existingIds = new Set(existingReceipts.map((r) => r.id));
+
+    const toInsert = notifRows
+      .filter((n) => !existingIds.has(`${userId}_${n.id}`))
+      .map((n) => ({
+        id: `${userId}_${n.id}`,
+        rawData: {
+          user_id: userId,
+          notification_id: n.id,
+          read_at: new Date().toISOString(),
+        },
+      }));
+
+    if (toInsert.length > 0) {
+      for (let i = 0; i < toInsert.length; i += 50) {
+        await db.insert(userNotifications).values(toInsert.slice(i, i + 50));
+      }
+    }
+
+    res.json({ success: true, marked: toInsert.length });
+  } catch (err) {
+    console.error('[notifications/mark-all-read POST]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
 /** POST /notifications/send — Expo push broadcast */
 router.post('/send', requireAuth, async (req, res) => {
   try {

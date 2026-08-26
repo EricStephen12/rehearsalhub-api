@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db } from '../db';
 import {
   subgroups, subgroupMembers, subgroupSongs, subgroupPraiseNights,
-  notifications, profiles,
+  notifications, profiles, ministeredSongs,
 } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
@@ -664,16 +664,123 @@ router.delete('/praise-nights/:id', requireAuth, async (req, res) => {
 
 // ── Subgroup Songs ────────────────────────────────────────────────────────────
 
-/** POST /subgroups/songs — add a song to a subgroup */
+/** POST /subgroups/songs/import — import song(s) from All Ministered / Master catalog into subgroup */
+router.post('/songs/import', requireAuth, async (req, res) => {
+  try {
+    const auth = res.locals.auth;
+    const { masterSongIds, masterSongId, subGroupId, zoneId, praiseNightId } = req.body || {};
+    const ids: string[] = Array.isArray(masterSongIds)
+      ? masterSongIds
+      : masterSongId ? [masterSongId] : [];
+
+    if (!subGroupId || ids.length === 0) {
+      res.status(400).json({ success: false, error: 'subGroupId and masterSongIds are required' });
+      return;
+    }
+
+    const masterRows = await db
+      .select()
+      .from(ministeredSongs)
+      .where(inArray(ministeredSongs.id, ids));
+
+    if (masterRows.length === 0) {
+      res.status(404).json({ success: false, error: 'Master song(s) not found' });
+      return;
+    }
+
+    const importedSongs: any[] = [];
+    const insertedIds: string[] = [];
+
+    for (const mRow of masterRows) {
+      const mData = mergeRawRow(mRow);
+      const songId = `sgs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const rawData = {
+        ...mData,
+        id: songId,
+        subGroupId,
+        sub_group_id: subGroupId,
+        masterSongId: mRow.id,
+        importedFromMaster: true,
+        status: 'unheard',
+        rehearsalStatus: 'unheard',
+        history: [],
+        comments: '',
+        importedAt: new Date().toISOString(),
+        importedBy: auth.userId,
+      };
+
+      const [row] = await db.insert(subgroupSongs).values({
+        id: songId,
+        title: String((mData as any).title || 'Untitled Song').trim(),
+        key: String((mData as any).key || ''),
+        tempo: String((mData as any).tempo || ''),
+        zoneId: zoneId || (mData as any).zoneId || '',
+        status: 'active',
+        rawData,
+      }).returning();
+
+      importedSongs.push(mergeRawRow(row));
+      insertedIds.push(songId);
+    }
+
+    // If praiseNightId provided, add newly inserted song IDs into the setlist
+    if (praiseNightId && insertedIds.length > 0) {
+      const [pn] = await db.select().from(subgroupPraiseNights).where(eq(subgroupPraiseNights.id, praiseNightId)).limit(1);
+      if (pn) {
+        const rawPn = (pn.rawData && typeof pn.rawData === 'object' ? pn.rawData : {}) as Record<string, any>;
+        const currentSongIds = Array.isArray(pn.songIds) ? pn.songIds : Array.isArray(rawPn.songIds) ? rawPn.songIds : [];
+        const nextSongIds = Array.from(new Set([...currentSongIds, ...insertedIds]));
+        await db.update(subgroupPraiseNights)
+          .set({
+            songIds: nextSongIds,
+            updatedAt: new Date(),
+            rawData: { ...rawPn, songIds: nextSongIds },
+          })
+          .where(eq(subgroupPraiseNights.id, praiseNightId));
+      }
+    }
+
+    res.status(201).json({ success: true, count: importedSongs.length, data: importedSongs });
+  } catch (err: any) {
+    console.error('[subgroups/songs/import POST]', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to import songs' });
+  }
+});
+
+/** POST /subgroups/songs — add a song to a subgroup with full rich metadata */
 router.post('/songs', requireAuth, async (req, res) => {
   try {
-    const { title, key, tempo, writer, lyrics, audioFile, category, subGroupId, zoneId } = req.body || {};
+    const {
+      title, key, tempo, writer, leadSinger, lyrics, solfa, notation, solfas,
+      audioFile, audioUrls, category, categories, subGroupId, zoneId, comments, history, conductorGuide
+    } = req.body || {};
     if (!subGroupId || !title?.trim()) {
       res.status(400).json({ success: false, error: 'subGroupId and title are required' });
       return;
     }
     const id = `sgs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const rawData = { subGroupId, title, key, tempo, writer, lyrics, audioFile, category };
+    const rawData = {
+      subGroupId,
+      sub_group_id: subGroupId,
+      id,
+      title: title.trim(),
+      key: key || '',
+      tempo: tempo || '',
+      writer: writer || '',
+      leadSinger: leadSinger || '',
+      lyrics: lyrics || '',
+      solfa: solfa || notation || solfas || '',
+      audioFile: audioFile || '',
+      audioUrls: audioUrls || {},
+      category: category || 'Praise Night',
+      categories: categories || [category || 'Praise Night'],
+      comments: comments || '',
+      history: Array.isArray(history) ? history : [],
+      conductorGuide: conductorGuide || '',
+      status: 'unheard',
+      rehearsalStatus: 'unheard',
+      createdAt: new Date().toISOString(),
+    };
     const [row] = await db.insert(subgroupSongs).values({
       id,
       title: title.trim(),
@@ -690,14 +797,19 @@ router.post('/songs', requireAuth, async (req, res) => {
   }
 });
 
-/** PATCH /subgroups/songs/:id — update a subgroup song */
+/** PATCH /subgroups/songs/:id — update all subgroup song fields including comments, status, history */
 router.patch('/songs/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const [row] = await db.select().from(subgroupSongs).where(eq(subgroupSongs.id, id)).limit(1);
     if (!row) { res.status(404).json({ success: false, error: 'Song not found' }); return; }
 
-    const { title, key, tempo, writer, lyrics, audioFile, category, status, isActive } = req.body || {};
+    const {
+      title, key, tempo, writer, leadSinger, lyrics, solfa, notation, solfas,
+      audioFile, audioUrls, category, categories, status, rehearsalStatus, isActive,
+      comments, history, conductorGuide, customParts
+    } = req.body || {};
+
     const prevRaw = (row.rawData && typeof row.rawData === 'object' ? row.rawData : {}) as Record<string, any>;
     const nextRaw = {
       ...prevRaw,
@@ -705,11 +817,23 @@ router.patch('/songs/:id', requireAuth, async (req, res) => {
       ...(key !== undefined ? { key } : {}),
       ...(tempo !== undefined ? { tempo } : {}),
       ...(writer !== undefined ? { writer } : {}),
+      ...(leadSinger !== undefined ? { leadSinger } : {}),
       ...(lyrics !== undefined ? { lyrics } : {}),
+      ...(solfa !== undefined ? { solfa } : {}),
+      ...(notation !== undefined ? { solfa: notation } : {}),
+      ...(solfas !== undefined ? { solfas } : {}),
       ...(audioFile !== undefined ? { audioFile } : {}),
+      ...(audioUrls !== undefined ? { audioUrls } : {}),
       ...(category !== undefined ? { category } : {}),
-      ...(status !== undefined ? { status } : {}),
+      ...(categories !== undefined ? { categories } : {}),
+      ...(status !== undefined ? { status, rehearsalStatus: status } : {}),
+      ...(rehearsalStatus !== undefined ? { status: rehearsalStatus, rehearsalStatus } : {}),
       ...(isActive !== undefined ? { isActive } : {}),
+      ...(comments !== undefined ? { comments } : {}),
+      ...(history !== undefined ? { history } : {}),
+      ...(conductorGuide !== undefined ? { conductorGuide } : {}),
+      ...(customParts !== undefined ? { customParts } : {}),
+      updatedAt: new Date().toISOString(),
     };
 
     const [updated] = await db.update(subgroupSongs)

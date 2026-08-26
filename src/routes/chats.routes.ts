@@ -427,7 +427,7 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
         chatId: m.chatId,
         text: m.text ?? (merged.text as string | undefined) ?? (merged.content as string | undefined) ?? '',
         content: (merged.content as string | undefined) ?? m.text,
-        type: m.type || 'text',
+        type: m.type || raw.type || 'text',
         senderId: m.senderId || raw.senderId || 'admin',
         senderName: raw.senderName || raw.sender_name || 'Admin Support',
         senderAvatar: raw.senderAvatar || raw.sender_avatar,
@@ -435,16 +435,35 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
         timestamp: msgCreatedAt,
         createdAt: msgCreatedAt,
         updatedAt: normalizeTimestampToISO(raw.updatedAt) || msgCreatedAt,
-        imageUrl: raw.imageUrl || raw.media_url,
+        imageUrl: raw.imageUrl || raw.mediaUrl || raw.media_url,
+        audioUrl: raw.audioUrl || raw.audio_url || raw.voiceUrl || raw.voice_url || raw.media_url,
+        videoUrl: raw.videoUrl || raw.video_url,
+        documentUrl: raw.documentUrl || raw.document_url,
+        documentName: raw.documentName || raw.document_name,
+        documentSize: raw.documentSize || raw.document_size,
+        songData: raw.songData || raw.song_data,
+        playlistData: raw.playlistData || raw.playlist_data,
+        profileData: raw.profileData || raw.profile_data || raw.contactData || raw.contact_data,
+        contactData: raw.contactData || raw.contact_data || raw.profileData,
+        waveform: raw.waveform,
+        duration: raw.duration || raw.voiceDuration || raw.voice_duration,
+        pollOptions: raw.pollOptions || raw.poll_options,
+        viewOnce: raw.viewOnce ?? false,
+        viewOnceViewed: raw.viewOnceViewed ?? false,
+        callType: raw.callType,
+        callId: raw.callId,
+        note: raw.note,
         attachment: raw.attachment,
-        voiceUrl: raw.voiceUrl || raw.voice_url,
-        voiceDuration: raw.voiceDuration || raw.voice_duration,
+        voiceUrl: raw.voiceUrl || raw.voice_url || raw.audioUrl,
+        voiceDuration: raw.voiceDuration || raw.voice_duration || raw.duration,
         replyTo: raw.replyTo || raw.reply_to,
         reactions: m.reactions || raw.reactions || {},
         edited: m.edited ?? raw.edited ?? false,
         deleted: raw.deleted ?? false,
+        starred: raw.starred ?? false,
+        pinned: raw.pinned ?? raw.pinnedInChat ?? false,
         status: m.status || raw.status || 'delivered',
-        pinnedInChat: raw.pinnedInChat ?? false,
+        pinnedInChat: raw.pinnedInChat ?? raw.pinned ?? false,
       };
     });
 
@@ -461,7 +480,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
     const { chatId } = req.params;
     const auth = res.locals.auth;
     const text = req.body.text?.trim() || req.body.content?.trim() || '';
-    if (!text && !req.body.imageUrl && !req.body.media_url && !req.body.attachment && !req.body.voiceUrl) {
+    if (!text && !req.body.imageUrl && !req.body.media_url && !req.body.mediaUrl && !req.body.attachment && !req.body.voiceUrl && !req.body.audioUrl && !req.body.songData && !req.body.playlistData && !req.body.profileData && !req.body.contactData) {
       res.status(400).json({ success: false, error: 'Message content is required' });
       return;
     }
@@ -475,18 +494,40 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       id,
       chatId,
       text,
+      content: text,
+      type: req.body.type || 'text',
       senderId: auth.userId,
       senderName,
       senderAvatar: req.body.senderAvatar || req.body.sender_avatar,
       senderType: isSenderAdmin ? 'admin' : 'user',
       timestamp: now,
       createdAt: now,
-      imageUrl: req.body.imageUrl || req.body.media_url,
+      imageUrl: req.body.imageUrl || req.body.mediaUrl || req.body.media_url,
+      mediaUrl: req.body.mediaUrl || req.body.media_url || req.body.imageUrl,
+      audioUrl: req.body.audioUrl || req.body.audio_url || req.body.voiceUrl || req.body.voice_url || req.body.media_url,
+      videoUrl: req.body.videoUrl || req.body.video_url,
+      documentUrl: req.body.documentUrl || req.body.document_url,
+      documentName: req.body.documentName || req.body.document_name,
+      documentSize: req.body.documentSize || req.body.document_size,
+      songData: req.body.songData || req.body.song_data,
+      playlistData: req.body.playlistData || req.body.playlist_data,
+      profileData: req.body.profileData || req.body.profile_data || req.body.contactData || req.body.contact_data,
+      contactData: req.body.contactData || req.body.contact_data || req.body.profileData,
+      waveform: req.body.waveform,
+      duration: req.body.duration || req.body.voiceDuration || req.body.voice_duration,
+      pollOptions: req.body.pollOptions || req.body.poll_options,
+      viewOnce: req.body.viewOnce ?? false,
+      viewOnceViewed: req.body.viewOnceViewed ?? false,
+      callType: req.body.callType,
+      callId: req.body.callId,
+      note: req.body.note,
       attachment: req.body.attachment,
-      voiceUrl: req.body.voiceUrl || req.body.voice_url,
-      voiceDuration: req.body.voiceDuration || req.body.voice_duration,
+      voiceUrl: req.body.voiceUrl || req.body.voice_url || req.body.audioUrl,
+      voiceDuration: req.body.voiceDuration || req.body.voice_duration || req.body.duration,
       replyTo: req.body.replyTo || req.body.reply_to,
-      reactions: {},
+      reactions: req.body.reactions || {},
+      starred: req.body.starred ?? false,
+      pinned: req.body.pinned ?? false,
       status: 'delivered',
     };
 
@@ -497,7 +538,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       senderName,
       text,
       type: req.body.type || 'text',
-      reactions: {},
+      reactions: req.body.reactions || {},
       rawData,
     });
 
@@ -575,8 +616,9 @@ router.post('/:chatId/messages/:messageId/reactions', requireAuth, async (req, r
 router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
   try {
     const { chatId, messageId } = req.params;
-    const { text, deleted, pinnedInChat } = req.body;
+    const { text, content, deleted, pinnedInChat, starred, pinned, viewOnceViewed, reactions } = req.body;
     const auth = res.locals.auth;
+    const updateText = text !== undefined ? text : content;
 
     const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
     if (!existing) {
@@ -590,15 +632,20 @@ router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
 
     const nextRaw = {
       ...prevRaw,
-      ...(text !== undefined ? { text, edited: true } : {}),
+      ...(updateText !== undefined ? { text: updateText, content: updateText, edited: true } : {}),
       ...(deleted !== undefined ? { deleted } : {}),
       ...(pinnedInChat !== undefined ? { pinnedInChat } : {}),
+      ...(pinned !== undefined ? { pinned, pinnedInChat: pinned } : {}),
+      ...(starred !== undefined ? { starred } : {}),
+      ...(viewOnceViewed !== undefined ? { viewOnceViewed } : {}),
+      ...(reactions !== undefined ? { reactions } : {}),
       updatedAt: new Date().toISOString(),
     };
 
     const [updated] = await db.update(messages)
       .set({
-        ...(text !== undefined ? { text, edited: true } : {}),
+        ...(updateText !== undefined ? { text: updateText, edited: true } : {}),
+        ...(reactions !== undefined ? { reactions } : {}),
         rawData: nextRaw,
       })
       .where(eq(messages.id, messageId))
