@@ -268,37 +268,35 @@ const handleKingsChatLogin = async (req: any, res: any) => {
     };
 
     let kcUserId: string | null = kingschatUserId || clientProfile?.userId || clientProfile?.id || null;
-    let verifiedEmail: string | null = email ? email.trim().toLowerCase() : (clientProfile?.email ? String(clientProfile.email).trim().toLowerCase() : null);
+    let verifiedEmail: string | null = (selectedEmail || email) ? (selectedEmail || email)!.trim().toLowerCase() : (clientProfile?.email ? String(clientProfile.email).trim().toLowerCase() : null);
     let verifiedProfileData: any = clientProfile || null;
 
-    // 1. Verify with KingsChat Developer API
+    // 1. Instant JWT payload decode (0ms)
+    try {
+      const parts = accessToken.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+        kcUserId = kcUserId || payload.userId || payload.sub || payload.id || null;
+        if (payload.email && !verifiedEmail) verifiedEmail = payload.email.trim().toLowerCase();
+        if (!verifiedProfileData) {
+          verifiedProfileData = {
+            name: payload.name || `${payload.given_name || ''} ${payload.family_name || ''}`.trim(),
+            username: payload.preferred_username || payload.username,
+            email: payload.email,
+          };
+        }
+      }
+    } catch {}
+
+    // 2. If profile data still missing and no selectedEmail, verify with KingsChat Developer API
     const KINGSCHAT_API_KEY = process.env.KINGSCHAT_API_KEY || '';
-    if (KINGSCHAT_API_KEY) {
+    if (KINGSCHAT_API_KEY && (!kcUserId || !verifiedProfileData) && !selectedEmail) {
       const p = await fetchKingsChatProfileNative(accessToken, KINGSCHAT_API_KEY);
       if (p) {
         kcUserId = p.id || p.userId || p.user_id || kcUserId;
         if (p.email) verifiedEmail = String(p.email).trim().toLowerCase();
         verifiedProfileData = p;
       }
-    }
-
-    // 2. Decode JWT if kcUserId not found yet
-    if (!kcUserId) {
-      try {
-        const parts = accessToken.split('.');
-        if (parts.length === 3) {
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-          kcUserId = payload.userId || payload.sub || payload.id || null;
-          if (payload.email && !verifiedEmail) verifiedEmail = payload.email.trim().toLowerCase();
-          if (!verifiedProfileData) {
-            verifiedProfileData = {
-              name: payload.name || `${payload.given_name || ''} ${payload.family_name || ''}`.trim(),
-              username: payload.preferred_username || payload.username,
-              email: payload.email,
-            };
-          }
-        }
-      } catch {}
     }
 
     if (!kcUserId && !verifiedEmail) {
