@@ -20,6 +20,7 @@ async function main() {
     END
     $do$;
   `);
+  await sql`GRANT auth_internal_owner TO CURRENT_USER`;
   await sql`ALTER ROLE auth_internal_owner NOLOGIN NOBYPASSRLS`;
   await sql`CREATE SCHEMA IF NOT EXISTS auth_internal AUTHORIZATION auth_internal_owner`;
   await sql`REVOKE ALL ON SCHEMA auth_internal FROM PUBLIC`;
@@ -40,7 +41,7 @@ async function main() {
       SELECT p.id, p.email, p.first_name, p.last_name, p.role, p.has_hq_access, p.avatar_url, p.kingschat_id, p.profile_completed, p.created_at, p.raw_data, p.updated_at, c.password_hash
       FROM public.profiles p JOIN public.auth_credentials c ON c.profile_id = p.id
       CROSS JOIN (SELECT lower(trim(regexp_replace(p_identifier, '^@', ''))) AS value) input
-      WHERE lower(p.email) = input.value OR lower(p.raw_data->>'username') = input.value OR lower(p.raw_data->>'alias') = input.value OR lower(p.kingschat_id) = input.value OR lower(p.raw_data->>'kingschat_id') = input.value OR lower(p.raw_data->>'kingschatId') = input.value OR lower(split_part(p.email, '@', 1)) = input.value OR lower(replace(concat(coalesce(p.first_name, ''), coalesce(p.last_name, '')), ' ', '')) = replace(input.value, ' ', '') OR lower(coalesce(p.first_name, '')) = input.value OR lower(coalesce(p.last_name, '')) = input.value
+      WHERE lower(p.email) = input.value OR lower(p.raw_data->>'username') = input.value OR lower(p.raw_data->>'alias') = input.value OR lower(p.kingschat_id) = input.value OR lower(p.raw_data->>'kingschat_id') = input.value OR lower(p.raw_data->>'kingschatId') = input.value OR lower(p.raw_data->>'kingsChatId') = input.value OR lower(split_part(p.email, '@', 1)) = input.value OR lower(replace(concat(coalesce(p.first_name, ''), coalesce(p.last_name, '')), ' ', '')) = replace(input.value, ' ', '') OR lower(coalesce(p.first_name, '')) = input.value OR lower(coalesce(p.last_name, '')) = input.value
       ORDER BY CASE WHEN lower(p.email) = input.value THEN 1 WHEN lower(p.raw_data->>'username') = input.value THEN 2 WHEN lower(p.raw_data->>'alias') = input.value THEN 3 WHEN lower(p.kingschat_id) = input.value OR lower(p.raw_data->>'kingschat_id') = input.value THEN 4 WHEN lower(split_part(p.email, '@', 1)) = input.value THEN 5 WHEN lower(replace(concat(coalesce(p.first_name, ''), coalesce(p.last_name, '')), ' ', '')) = replace(input.value, ' ', '') THEN 6 ELSE 7 END
       LIMIT 10
     $fn$;
@@ -88,17 +89,17 @@ async function main() {
           matching_count integer;
     BEGIN
       IF p_selected_email IS NOT NULL THEN
-        SELECT p.id INTO chosen_id FROM public.profiles p WHERE lower(p.email) = lower(trim(p_selected_email)) AND ((p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingschatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username))) LIMIT 1;
+        SELECT p.id INTO chosen_id FROM public.profiles p WHERE lower(p.email) = lower(trim(p_selected_email)) AND ((p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingschatId' = p_kingschat_id OR p.raw_data->>'kingsChatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username))) LIMIT 1;
       ELSE
-        SELECT count(*) INTO matching_count FROM public.profiles p WHERE (p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingschatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username));
+        SELECT count(*) INTO matching_count FROM public.profiles p WHERE (p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingschatId' = p_kingschat_id OR p.raw_data->>'kingsChatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username));
         IF matching_count = 1 THEN
-          SELECT p.id INTO chosen_id FROM public.profiles p WHERE (p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingschatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username)) LIMIT 1;
+          SELECT p.id INTO chosen_id FROM public.profiles p WHERE (p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingsChatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username)) LIMIT 1;
         END IF;
       END IF;
       IF chosen_id IS NOT NULL AND p_kingschat_id IS NOT NULL THEN
-        UPDATE public.profiles SET kingschat_id = p_kingschat_id, raw_data = coalesce(raw_data, '{}'::jsonb) || jsonb_build_object('kingschatId', p_kingschat_id, 'kingschat_id', p_kingschat_id) WHERE id = chosen_id AND (kingschat_id IS NULL OR kingschat_id = p_kingschat_id);
+        UPDATE public.profiles SET kingschat_id = p_kingschat_id, raw_data = coalesce(raw_data, '{}'::jsonb) || jsonb_build_object('kingschatId', p_kingschat_id, 'kingschat_id', p_kingschat_id, 'kingsChatId', p_kingschat_id) WHERE id = chosen_id AND (kingschat_id IS NULL OR kingschat_id = p_kingschat_id);
       END IF;
-      RETURN QUERY SELECT p.* FROM public.profiles p WHERE (p_selected_email IS NULL OR lower(p.email) = lower(trim(p_selected_email))) AND ((p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingschatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username)));
+      RETURN QUERY SELECT p.* FROM public.profiles p WHERE (p_selected_email IS NULL OR lower(p.email) = lower(trim(p_selected_email))) AND ((p_kingschat_id IS NOT NULL AND (p.kingschat_id = p_kingschat_id OR p.raw_data->>'kingschat_id' = p_kingschat_id OR p.raw_data->>'kingsChatId' = p_kingschat_id)) OR (p_email IS NOT NULL AND (lower(p.email) = lower(p_email) OR lower(p.raw_data->>'email') = lower(p_email))) OR (p_username IS NOT NULL AND lower(p.raw_data->>'username') = lower(p_username)));
     END
     $fn$;
   `);

@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { rawPgClient } from './src/db';
 
 const TABLES = [
+  'profiles',
+  'hq_members',
   'notifications',
   'songs',
   'zone_songs',

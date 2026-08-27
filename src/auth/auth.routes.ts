@@ -293,7 +293,7 @@ const handleKingsChatLogin = async (req: any, res: any) => {
       profile?: any;
     };
 
-    let kcUserId: string | null = kingschatUserId || clientProfile?.userId || clientProfile?.id || null;
+    let kcUserId: string | null = kingschatUserId || clientProfile?.userId || clientProfile?.user_id || clientProfile?.id || clientProfile?.kingschatId || clientProfile?.kingsChatId || null;
     let verifiedEmail: string | null = (selectedEmail || email) ? (selectedEmail || email)!.trim().toLowerCase() : (clientProfile?.email ? String(clientProfile.email).trim().toLowerCase() : null);
     let verifiedProfileData: any = clientProfile || null;
 
@@ -302,7 +302,7 @@ const handleKingsChatLogin = async (req: any, res: any) => {
       const parts = accessToken.split('.');
       if (parts.length === 3) {
         const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-        kcUserId = kcUserId || payload.userId || payload.sub || payload.id || null;
+        kcUserId = kcUserId || payload.userId || payload.user_id || payload.sub || payload.id || payload.kingschatId || payload.kingsChatId || null;
         if (payload.email && !verifiedEmail) verifiedEmail = payload.email.trim().toLowerCase();
         if (!verifiedProfileData) {
           verifiedProfileData = {
@@ -319,7 +319,7 @@ const handleKingsChatLogin = async (req: any, res: any) => {
     if (KINGSCHAT_API_KEY && (!kcUserId || !verifiedProfileData) && !selectedEmail) {
       const p = await fetchKingsChatProfileNative(accessToken, KINGSCHAT_API_KEY);
       if (p) {
-        kcUserId = p.id || p.userId || p.user_id || kcUserId;
+        kcUserId = p.id || p.userId || p.user_id || p.kingschatId || p.kingsChatId || kcUserId;
         if (p.email) verifiedEmail = String(p.email).trim().toLowerCase();
         verifiedProfileData = p;
       }
