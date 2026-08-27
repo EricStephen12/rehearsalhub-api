@@ -365,35 +365,70 @@ router.get('/annotations/:songId', requireAuth, async (req: any, res: any) => {
 /** GET /songs/history */
 router.get('/history', requireAuth, async (req, res) => {
   try {
-    const { songId } = req.query;
-    if (!songId || typeof songId !== 'string') {
-      res.status(400).json({ success: false, error: 'Missing songId' });
+    const { songId, title } = req.query as { songId?: string; title?: string };
+    if (!songId && !title) {
+      res.status(400).json({ success: false, error: 'Missing songId or title' });
       return;
     }
 
+    const sid = typeof songId === 'string' ? songId.trim() : '';
+    const stitle = typeof title === 'string' ? title.trim() : '';
+
     // 1. Fetch from song_history table
-    const rows = await db.select().from(songHistory).where(
-      sql`${songHistory.songId} = ${songId} OR ${songHistory.rawData}->>'songId' = ${songId} OR ${songHistory.rawData}->>'song_id' = ${songId}`
-    ).orderBy(desc(songHistory.createdAt));
+    const whereConditions = [];
+    if (sid) {
+      whereConditions.push(
+        sql`${songHistory.songId} = ${sid} OR ${songHistory.rawData}->>'songId' = ${sid} OR ${songHistory.rawData}->>'song_id' = ${sid} OR ${songHistory.rawData}->>'firebaseId' = ${sid}`
+      );
+    }
+    if (stitle) {
+      whereConditions.push(
+        sql`lower(${songHistory.title}) = lower(${stitle}) OR lower(${songHistory.rawData}->>'title') = lower(${stitle}) OR lower(${songHistory.rawData}->>'songTitle') = lower(${stitle})`
+      );
+    }
+
+    const rows = await db
+      .select()
+      .from(songHistory)
+      .where(or(...whereConditions))
+      .orderBy(desc(songHistory.createdAt));
 
     const merged = rows.map(mergeRawRow);
 
-    // 2. Also check if the song has an embedded history array in rawData
+    // 2. Also check if the song has an embedded history array in rawData across songs or programs
     if (merged.length === 0) {
       const tables = [songs, ministeredSongs, zoneSongs, subgroupSongs];
       for (const t of tables) {
-        const [song] = await db.select().from(t).where(eq(t.id, songId)).limit(1);
-        if (song) {
-          let history = (song as any).rawData?.history || (song as any).raw_data?.history;
-          if (typeof history === 'string') {
-            try {
-              history = JSON.parse(history);
-            } catch {
-              history = [];
+        if (sid) {
+          const [song] = await db.select().from(t).where(eq(t.id, sid)).limit(1);
+          if (song) {
+            let history = (song as any).rawData?.history || (song as any).raw_data?.history;
+            if (typeof history === 'string') {
+              try {
+                history = JSON.parse(history);
+              } catch {
+                history = [];
+              }
+            }
+            if (Array.isArray(history) && history.length > 0) {
+              res.json({ success: true, count: history.length, data: history });
+              return;
             }
           }
-          if (Array.isArray(history) && history.length > 0) {
-            res.json({ success: true, count: history.length, data: history });
+        }
+      }
+
+      // Check programs (praise nights) for embedded song history
+      const progRows = await db.select().from(programs);
+      for (const prog of progRows) {
+        const progSongs = Array.isArray(prog.songs) ? prog.songs : (prog.rawData as any)?.songs;
+        if (Array.isArray(progSongs)) {
+          const found = progSongs.find((s: any) =>
+            (sid && (s.id === sid || s.firebaseId === sid || String(s.songId) === sid)) ||
+            (stitle && s.title && s.title.toLowerCase().trim() === stitle.toLowerCase().trim())
+          );
+          if (found && Array.isArray(found.history) && found.history.length > 0) {
+            res.json({ success: true, count: found.history.length, data: found.history });
             return;
           }
         }
