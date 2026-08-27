@@ -51,6 +51,14 @@ process.on('uncaughtException', (error) => {
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
+  throw new Error('CORS_ALLOWED_ORIGINS must be configured in production');
+}
 
 // Rate limiter: 5000 requests per 15 minutes per IP (won't choke normal active admin sessions)
 const limiter = rateLimit({
@@ -63,8 +71,16 @@ const limiter = rateLimit({
 });
 
 // Middleware
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Origin not allowed'));
+  },
+}));
+app.use(express.json({ limit: '1mb' }));
 app.use(limiter);
 // Tenant scope middleware — runs globally after auth, resolves req.tenant for every request
 app.use(tenantMiddleware);

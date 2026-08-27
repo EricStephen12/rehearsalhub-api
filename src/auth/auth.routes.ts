@@ -25,6 +25,30 @@ const loginLimiter = rateLimit({
   message: { success: false, error: 'Too many login attempts, please try again later.' },
 });
 
+const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many refresh attempts, please try again later.' },
+});
+
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many password reset attempts, please try again later.' },
+});
+
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many OTP requests, please try again later.' },
+});
+
 const loginSchema = z.object({
   email: z.string().min(1).optional(),
   username: z.string().min(1).optional(),
@@ -55,6 +79,7 @@ const logoutSchema = z.object({
 
 const resetPasswordSchema = z.object({
   email: z.string().email(),
+  otp: z.string().length(6),
   newPassword: z.string().min(6),
 });
 
@@ -134,7 +159,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 });
 
 // POST /auth/refresh
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', refreshLimiter, async (req, res) => {
   const parsed = refreshSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: 'Invalid request body' });
@@ -386,7 +411,7 @@ router.post('/kingschat', handleKingsChatLogin);
 const otpStore = new Map<string, { otp: string; expiresAt: number }>();
 
 // POST /auth/forgot-password/send-otp
-router.post('/forgot-password/send-otp', async (req, res) => {
+router.post('/forgot-password/send-otp', otpLimiter, async (req, res) => {
   try {
     const email = req.body.email?.trim()?.toLowerCase();
     if (!email) {
@@ -424,7 +449,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
 });
 
 // POST /auth/forgot-password/verify-otp
-router.post('/forgot-password/verify-otp', async (req, res) => {
+router.post('/forgot-password/verify-otp', passwordResetLimiter, async (req, res) => {
   try {
     const email = req.body.email?.trim()?.toLowerCase();
     const otp = req.body.otp?.trim();
@@ -458,7 +483,7 @@ router.post('/forgot-password/verify-otp', async (req, res) => {
 });
 
 // POST /auth/reset-password
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', passwordResetLimiter, async (req, res) => {
   const parsed = resetPasswordSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: 'Invalid request body' });
@@ -466,8 +491,15 @@ router.post('/reset-password', async (req, res) => {
   }
 
   try {
-    const { email, newPassword } = parsed.data;
+    const { email, otp, newPassword } = parsed.data;
     const cleanEmail = email.toLowerCase();
+
+    const stored = otpStore.get(cleanEmail);
+    if (!stored || Date.now() > stored.expiresAt || stored.otp !== otp) {
+      if (stored && Date.now() > stored.expiresAt) otpStore.delete(cleanEmail);
+      res.status(400).json({ success: false, error: 'OTP verification is required before resetting the password.' });
+      return;
+    }
 
     await resetPasswordForEmail(cleanEmail, newPassword);
     otpStore.delete(cleanEmail);

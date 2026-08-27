@@ -62,6 +62,12 @@ async function verifyRls() {
     console.log(`${table}: RLS=${row.rls_enabled ? 'ON' : 'OFF'} FORCE=${row.force_rls ? 'ON' : 'OFF'} POLICIES=${row.policy_count}`);
   }
 
+  const identityStatus = tableRows.filter((row: any) => row.table_name === 'profiles' || row.table_name === 'hq_members');
+  const incompleteIdentity = identityStatus.filter((row: any) => !row.rls_enabled || !row.force_rls || row.policy_count === 0);
+  if (incompleteIdentity.length > 0) {
+    throw new Error(`Identity RLS is incomplete: ${incompleteIdentity.map((row: any) => `${row.table_name} (RLS=${row.rls_enabled ? 'ON' : 'OFF'}, FORCE=${row.force_rls ? 'ON' : 'OFF'}, POLICIES=${row.policy_count})`).join(', ')}`);
+  }
+
   const policies = await rawPgClient`
     SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
     FROM pg_policies

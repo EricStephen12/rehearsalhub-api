@@ -10,6 +10,13 @@ const upload = multer({
     fileSize: 150 * 1024 * 1024, // 150 MB max per file
   },
 });
+const publicAvatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype));
+  },
+});
 
 // Upload media directly to Cloudflare R2
 router.post('/', requireAuth, upload.single('file'), async (req, res) => {
@@ -44,7 +51,7 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
 });
 
 // Public upload for registration avatars if unauthenticated
-router.post('/public', upload.single('file'), async (req, res) => {
+router.post('/public', publicAvatarUpload.single('file'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) {
@@ -52,7 +59,7 @@ router.post('/public', upload.single('file'), async (req, res) => {
       return;
     }
 
-    const folder = (req.body.folder || 'public').toString();
+    const folder = 'public/avatars';
     const result = await uploadToR2(file.buffer, {
       folder,
       filename: file.originalname,

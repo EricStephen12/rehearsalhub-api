@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { AccessToken } from 'livekit-server-sdk';
 import { requireAuth } from '../auth/auth.middleware';
+import { db } from '../db';
+import { calls } from '../schema';
+import { and, eq, or } from 'drizzle-orm';
 
 const router = Router();
 
@@ -31,6 +34,17 @@ async function generateToken(room: string, participant: string): Promise<string>
   return at.toJwt();
 }
 
+async function canJoinRoom(room: string, userId: string): Promise<boolean> {
+  const [call] = await db.select({ id: calls.id }).from(calls).where(and(
+    or(
+      eq(calls.id, room),
+      eq(calls.roomId, room),
+    ),
+    or(eq(calls.callerId, userId), eq(calls.receiverId, userId)),
+  )).limit(1);
+  return Boolean(call);
+}
+
 /**
  * GET /livekit-token?room=<roomName>&participant=<userId>
  * Used by rehearsalhubv2 (CallScreen.tsx) to join a call room.
@@ -41,6 +55,10 @@ router.get('/', requireAuth, async (req, res) => {
 
     if (!room || !participant) {
       res.status(400).json({ success: false, error: 'room and participant query params are required' });
+      return;
+    }
+    if (participant !== res.locals.auth.userId || !(await canJoinRoom(room, participant))) {
+      res.status(403).json({ success: false, error: 'You are not a participant in this call' });
       return;
     }
 
@@ -76,6 +94,10 @@ router.post('/', requireAuth, async (req, res) => {
 
     if (!room || !participant) {
       res.status(400).json({ success: false, error: 'room and participant body fields are required' });
+      return;
+    }
+    if (participant !== res.locals.auth.userId || !(await canJoinRoom(room, participant))) {
+      res.status(403).json({ success: false, error: 'You are not a participant in this call' });
       return;
     }
 
