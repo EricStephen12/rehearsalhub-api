@@ -251,9 +251,18 @@ router.post('/', requireAuth, async (req: any, res) => {
     const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
     const rawProfile = (userProfile?.rawData && typeof userProfile.rawData === 'object') ? (userProfile.rawData as Record<string, any>) : {};
 
+    const requestedZone = req.body.zoneId || req.body.zone_id;
+    if (!req.tenant?.isHQAdmin && requestedZone && req.tenant?.effectiveZoneId && requestedZone !== req.tenant.effectiveZoneId) {
+      res.status(403).json({
+        success: false,
+        error: 'Forbidden: Cannot create or modify records outside your assigned tenant zone.',
+      });
+      return;
+    }
+
     const fullName = [userProfile?.firstName, userProfile?.lastName].filter(Boolean).join(' ') || (rawProfile.first_name ? `${rawProfile.first_name} ${rawProfile.last_name || ''}` : '') || auth.email;
     const userEmail = userProfile?.email || auth.email || '';
-    const userZone = req.tenant?.effectiveZoneId || req.body.zoneId || auth.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
+    const userZone = req.tenant?.effectiveZoneId || auth.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
     const userZoneName = req.body.zoneName || req.tenant?.effectiveZoneId || userZone;
 
     const submissionRaw = {

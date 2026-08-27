@@ -122,8 +122,17 @@ const handleCheckIn = async (req: any, res: any) => {
     const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, targetUserId)).limit(1);
     const rawProfile = (userProfile?.rawData && typeof userProfile.rawData === 'object') ? (userProfile.rawData as Record<string, any>) : {};
 
+    const requestedZone = req.body.zoneId || req.body.zone_id;
+    if (!req.tenant?.isHQAdmin && requestedZone && req.tenant?.effectiveZoneId && requestedZone !== req.tenant.effectiveZoneId) {
+      res.status(403).json({
+        success: false,
+        error: 'Forbidden: Cannot record attendance outside your assigned tenant zone.',
+      });
+      return;
+    }
+
     const fullName = [userProfile?.firstName, userProfile?.lastName].filter(Boolean).join(' ') || (rawProfile.first_name ? `${rawProfile.first_name} ${rawProfile.last_name || ''}` : '') || req.body.userName || auth.email;
-    const zoneId = req.body.zoneId || rawProfile.zone_code || rawProfile.zoneId || auth.zoneId || 'general';
+    const zoneId = req.tenant?.effectiveZoneId || auth.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
     const eventName = req.body.eventName || 'Rehearsal';
 
     const rawData = {

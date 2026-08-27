@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, sql, desc, inArray } from 'drizzle-orm';
+import { eq, desc, inArray, sql, and } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
 import { chats, messages, profiles } from '../schema';
@@ -494,10 +494,64 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
       };
     });
 
+    // Mark unread messages from other senders as read & clear unread count for current user
+    const auth = res.locals.auth;
+    const chatId = req.params.chatId;
+    const currentUserId = auth?.userId as string;
+    if (currentUserId && chatId) {
+      try {
+        const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+        if (existingChat) {
+          const unread = (typeof existingChat.unreadCount === 'object' && existingChat.unreadCount !== null)
+            ? { ...(existingChat.unreadCount as Record<string, number>) }
+            : {};
+          if (unread[currentUserId] && unread[currentUserId] > 0) {
+            unread[currentUserId] = 0;
+            await db.update(chats).set({ unreadCount: unread }).where(eq(chats.id, chatId));
+            broadcast('chat_read', chatId, { chatId, userId: currentUserId });
+          }
+        }
+
+        await db.update(messages)
+          .set({ status: 'read' })
+          .where(and(eq(messages.chatId, chatId), sql`${messages.senderId} != ${currentUserId}`, sql`${messages.status} != 'read'`));
+      } catch (readErr) {
+        console.warn('[chats/:id/messages] Error clearing unread status:', readErr);
+      }
+    }
+
     res.json({ success: true, count: data.length, data });
   } catch (err) {
     console.error('[chats/:id/messages]', err);
     res.status(500).json({ success: false, error: 'Failed to load messages' });
+  }
+});
+
+// POST /chats/:chatId/read — Explicitly mark chat as read
+router.post('/:chatId/read', requireAuth, async (req: any, res) => {
+  try {
+    const { chatId } = req.params;
+    const auth = res.locals.auth;
+    const currentUserId = auth.userId as string;
+
+    const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (existingChat) {
+      const unread = (typeof existingChat.unreadCount === 'object' && existingChat.unreadCount !== null)
+        ? { ...(existingChat.unreadCount as Record<string, number>) }
+        : {};
+      unread[currentUserId] = 0;
+      await db.update(chats).set({ unreadCount: unread }).where(eq(chats.id, chatId));
+    }
+
+    await db.update(messages)
+      .set({ status: 'read' })
+      .where(and(eq(messages.chatId, chatId), sql`${messages.senderId} != ${currentUserId}`));
+
+    broadcast('chat_read', chatId, { chatId, userId: currentUserId });
+    res.json({ success: true, message: 'Chat marked as read' });
+  } catch (err) {
+    console.error('[chats/:id/read]', err);
+    res.status(500).json({ success: false, error: 'Failed to mark chat as read' });
   }
 });
 
@@ -569,11 +623,23 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       rawData,
     });
 
-    // Update last message in chat
+    // Update last message & increment unreadCount for other participants
     const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
     if (existingChat) {
       const chatRaw = (existingChat.rawData && typeof existingChat.rawData === 'object') ? (existingChat.rawData as Record<string, any>) : {};
+      const currentUnread = (typeof existingChat.unreadCount === 'object' && existingChat.unreadCount !== null)
+        ? { ...(existingChat.unreadCount as Record<string, number>) }
+        : {};
+
+      const participants = Array.isArray(existingChat.participants) ? existingChat.participants : [];
+      participants.forEach((pId: string) => {
+        if (pId !== auth.userId) {
+          currentUnread[pId] = (currentUnread[pId] || 0) + 1;
+        }
+      });
+
       await db.update(chats).set({
+        unreadCount: currentUnread,
         rawData: { ...chatRaw, lastMessage: text || 'Media attachment', lastTimestamp: now, updatedAt: now },
       }).where(eq(chats.id, chatId));
     }
