@@ -4,7 +4,7 @@ import { eq, inArray, sql, and, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { profiles, authCredentials, notifications, zoneMembers, hqMembers } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { hashPassword } from '../auth/password';
 import { broadcast } from '../ws/wsServer';
 
@@ -200,7 +200,19 @@ router.get('/directory', requireAuth, async (req, res) => {
 
   // If specific IDs are requested
   if (idList.length > 0) {
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
     const rows = await db.select().from(profiles).where(inArray(profiles.id, idList));
+    if (!isHqAdmin) {
+      const zoneId = req.tenant?.effectiveZoneId;
+      const normalizedZone = String(zoneId || '').replace(/-/g, '').toLowerCase();
+      const memberships = await db.select().from(zoneMembers).where(
+        sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${normalizedZone} AND ${zoneMembers.userId} IN (${sql.join(idList.map((id) => sql`${id}`), sql`, `)})`,
+      );
+      const allowedIds = new Set(memberships.map((membership) => membership.userId));
+      const scopedRows = rows.filter((row) => allowedIds.has(row.id) || row.id === auth.userId);
+      res.json({ success: true, data: scopedRows.map(directoryDto) });
+      return;
+    }
     res.json({ success: true, data: rows.map(directoryDto) });
     return;
   }
@@ -253,20 +265,43 @@ router.get('/directory', requireAuth, async (req, res) => {
     return;
   }
 
-  // Fallback return all
+  // A non-HQ caller must always receive only their signed tenant directory.
   const rows = await db.select().from(profiles);
-  res.json({ success: true, data: rows.map(directoryDto) });
+  const canViewAllProfiles = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
+  if (canViewAllProfiles) {
+    res.json({ success: true, data: rows.map(directoryDto) });
+    return;
+  }
+
+  const normalizedZone = String(req.tenant?.effectiveZoneId || '').replace(/-/g, '').toLowerCase();
+  const memberships = await db.select().from(zoneMembers).where(
+    sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${normalizedZone}`,
+  );
+  const allowedIds = new Set(memberships.map((membership) => membership.userId));
+  res.json({ success: true, data: rows.filter((row) => allowedIds.has(row.id) || row.id === auth.userId).map(directoryDto) });
 });
 
 // GET /profiles/:userId
 router.get('/:userId', requireAuth, async (req, res) => {
   const { userId } = req.params;
+  const auth = res.locals.auth;
+  const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
   const [profile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
   if (!profile) {
     res.status(404).json({ success: false, error: 'Profile not found' });
     return;
   }
-  const auth = res.locals.auth;
+  if (!isHqAdmin && auth.userId !== userId) {
+    const zoneId = req.tenant?.effectiveZoneId;
+    const normalizedZone = String(zoneId || '').replace(/-/g, '').toLowerCase();
+    const [membership] = await db.select().from(zoneMembers).where(
+      sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${normalizedZone} AND ${zoneMembers.userId} = ${userId}`,
+    ).limit(1);
+    if (!membership) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+  }
   const canViewPrivate = auth.userId === userId || auth.role === 'hq_admin' || auth.role === 'admin';
   res.json({ success: true, data: canViewPrivate ? profile : directoryDto(profile) });
 });
@@ -466,7 +501,7 @@ router.post('/:userId/password', requireAuth, async (req, res) => {
 });
 
 // PATCH /profiles/:userId/role — HQ Admin updates user role
-router.patch('/:userId/role', requireAuth, async (req, res) => {
+router.patch('/:userId/role', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
@@ -501,7 +536,7 @@ router.patch('/:userId/role', requireAuth, async (req, res) => {
 });
 
 // POST /profiles/:userId/approve — HQ admin approves a pending join request
-router.post('/:userId/approve', requireAuth, async (req, res) => {
+router.post('/:userId/approve', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
     const auth = res.locals.auth;
@@ -548,7 +583,7 @@ router.post('/:userId/approve', requireAuth, async (req, res) => {
 });
 
 // POST /profiles/:userId/reject — HQ admin rejects a pending join request
-router.post('/:userId/reject', requireAuth, async (req, res) => {
+router.post('/:userId/reject', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
     const auth = res.locals.auth;

@@ -28,6 +28,7 @@ async function runStepByStepRLS() {
 
     // 2. Enable RLS and drop existing policy
     await rawPgClient.unsafe(`ALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;`);
+    await rawPgClient.unsafe(`ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;`);
     await rawPgClient.unsafe(`DROP POLICY IF EXISTS tenant_isolation ON "${table}";`);
 
     // 3. Create Tenant Isolation Policy
@@ -38,9 +39,6 @@ async function runStepByStepRLS() {
         USING (
           current_setting('app.is_hq', true) = 'true'
           OR "${zoneCol}" = current_setting('app.current_zone_id', true)
-          OR "${zoneCol}" IS NULL
-          OR current_setting('app.current_zone_id', true) IS NULL
-          OR current_setting('app.current_zone_id', true) = ''
         );
       `);
     } else if (subgroupIdCol) {
@@ -50,8 +48,6 @@ async function runStepByStepRLS() {
         USING (
           current_setting('app.is_hq', true) = 'true'
           OR "${subgroupIdCol}" = current_setting('app.current_church_id', true)
-          OR current_setting('app.current_church_id', true) IS NULL
-          OR current_setting('app.current_church_id', true) = ''
         );
       `);
     }

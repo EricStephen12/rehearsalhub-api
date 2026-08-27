@@ -137,7 +137,7 @@ export function withTenantTransaction(
 ): void {
   // If non-HQ role has no effectiveZoneId on a restricted route, reject immediately with 403
   if (!tenant.isHQAdmin && !tenant.effectiveZoneId) {
-// const HQ_ROLES = new Set(['hq_admin', 'admin', 'super_admin']);
+    res.status(403).json({ success: false, error: 'Forbidden: Missing tenant zone scope' });
     return;
   }
 
@@ -150,7 +150,8 @@ export function withTenantTransaction(
       SELECT 
         set_config('app.current_zone_id', ${zoneVal}, true),
         set_config('app.is_hq', ${isHqVal}, true),
-        set_config('app.current_church_id', ${churchVal}, true);
+        set_config('app.current_church_id', ${churchVal}, true),
+        set_config('app.current_user_id', ${res.locals.auth?.userId || ''}, true);
     `);
 
     await dbStorage.run(tx as any, async () => {
@@ -164,7 +165,7 @@ export function withTenantTransaction(
           reject(err);
         }
       });
-      });
+    });
   }).catch((txErr) => {
     if (!res.headersSent) {
       console.error('[withTenantTransaction Error]:', txErr);

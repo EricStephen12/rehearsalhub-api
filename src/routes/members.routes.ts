@@ -122,6 +122,13 @@ router.get('/hq', requireAuth, async (req, res) => {
 
 // GET /members/hq/:hqGroupId — membership DTOs (any authenticated user)
 router.get('/hq/:hqGroupId', requireAuth, async (req, res) => {
+  const auth = res.locals.auth;
+  const isHQAdmin = auth.role === 'admin' || auth.role === 'hq_admin' || auth.role === 'super_admin';
+  if (!isHQAdmin && auth.zoneId !== req.params.hqGroupId) {
+    res.status(403).json({ success: false, error: 'Forbidden' });
+    return;
+  }
+
   const members = await db
     .select()
     .from(hqMembers)
@@ -132,6 +139,14 @@ router.get('/hq/:hqGroupId', requireAuth, async (req, res) => {
 
 // GET /members/zone/:zoneId — membership DTOs
 router.get('/zone/:zoneId', requireAuth, async (req, res) => {
+  const auth = res.locals.auth;
+  const isHQAdmin = auth.role === 'admin' || auth.role === 'hq_admin' || auth.role === 'super_admin';
+  const normalizeTenantId = (value: unknown) => String(value || '').replace(/-/g, '').toLowerCase();
+  if (!isHQAdmin && normalizeTenantId(auth.zoneId) !== normalizeTenantId(req.params.zoneId)) {
+    res.status(403).json({ success: false, error: 'Forbidden' });
+    return;
+  }
+
   const members = await db.select().from(zoneMembers).where(eq(zoneMembers.zoneId, req.params.zoneId));
   const data = wantsEnrich(req.query.enrich) ? await enrichMemberships(members) : members;
   res.json({ success: true, data });

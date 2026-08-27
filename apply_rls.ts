@@ -16,9 +16,6 @@ async function canaryNotifications() {
     USING (
       current_setting('app.is_hq', true) = 'true'
       OR zone_id = current_setting('app.current_zone_id', true)
-      OR zone_id IS NULL
-      OR current_setting('app.current_zone_id', true) IS NULL
-      OR current_setting('app.current_zone_id', true) = ''
     );
   `;
   console.log('Policy tenant_isolation created on notifications.');

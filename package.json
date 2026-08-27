@@ -7,6 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "test": "tsx --test tenant.middleware.test.ts auth-contract.test.ts",
+    "verify:rls": "tsx verify_rls.ts",
+    "secure:identity-rls": "tsx secure_identity_rls.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

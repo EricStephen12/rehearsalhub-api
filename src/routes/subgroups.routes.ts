@@ -12,6 +12,22 @@ import { mergeRawRow } from '../lib/rawRow';
 const router = Router();
 const idSchema = z.string().min(1).max(200);
 
+function normalizeTenantId(value: unknown): string {
+  return String(value || '').replace(/-/g, '').toLowerCase();
+}
+
+function canAccessSubgroup(req: any, row: any): boolean {
+  const tenant = req.tenant;
+  if (tenant?.isHQAdmin) return true;
+
+  const raw = (row.rawData && typeof row.rawData === 'object' ? row.rawData : {}) as Record<string, any>;
+  const subgroupZone = normalizeTenantId(row.zoneId || raw.zoneId || raw.zone_id);
+  const tenantZone = normalizeTenantId(tenant?.effectiveZoneId);
+  if (!subgroupZone || !tenantZone || subgroupZone !== tenantZone) return false;
+
+  return !tenant?.effectiveChurchId || row.id === tenant.effectiveChurchId;
+}
+
 function shapeSubgroup(row: typeof subgroups.$inferSelect) {
   const merged = mergeRawRow(row);
   const memberIds = Array.isArray(merged.memberIds)
@@ -123,6 +139,15 @@ router.get('/:id/songs', requireAuth, async (req, res) => {
       res.status(400).json({ success: false, error: 'Invalid id' });
       return;
     }
+    const [subgroup] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
+    if (!subgroup) {
+      res.status(404).json({ success: false, error: 'Subgroup not found' });
+      return;
+    }
+    if (!canAccessSubgroup(req, subgroup)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const rows = await db
       .select()
       .from(subgroupSongs)
@@ -145,6 +170,15 @@ router.get('/:id/praise-nights', requireAuth, async (req, res) => {
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'Invalid id' });
+      return;
+    }
+    const [subgroup] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
+    if (!subgroup) {
+      res.status(404).json({ success: false, error: 'Subgroup not found' });
+      return;
+    }
+    if (!canAccessSubgroup(req, subgroup)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
     const rows = await db
@@ -467,6 +501,10 @@ router.get('/:id/members', requireAuth, async (req, res) => {
   try {
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid id' }); return; }
+
+    const [subgroup] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
+    if (!subgroup) { res.status(404).json({ success: false, error: 'Subgroup not found' }); return; }
+    if (!canAccessSubgroup(req, subgroup)) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
 
     // Prefer new subgroup_members table; fall back to rawData memberIds for legacy subgroups
     const memberRows = await db
