@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, or, asc, desc, sql } from 'drizzle-orm';
+import { eq, or, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   ministeredSongs,
@@ -24,7 +24,28 @@ const router = Router();
 const getMinisteredSongsHandler = async (_req: any, res: any) => {
   try {
     const rows = await db.select().from(ministeredSongs).orderBy(asc(ministeredSongs.title));
-    res.json({ success: true, count: rows.length, data: rows });
+    const merged = rows.map((r) => {
+      const m = mergeRawRow(r);
+      const raw = (r.rawData && typeof r.rawData === 'object') ? (r.rawData as Record<string, any>) : {};
+      const audioFile = r.audioFile || raw.audioFile || raw.audioUrl || (m.audioFile as string) || '';
+      return {
+        ...m,
+        id: r.id,
+        title: r.title || raw.title || 'Untitled Song',
+        audioFile,
+        audioUrl: audioFile,
+        audioUrls: r.audioUrls || raw.audioUrls || m.audioUrls || { full: audioFile },
+        lyrics: r.lyrics || raw.lyrics || m.lyrics || '',
+        solfa: r.solfa || raw.solfas || raw.solfa || m.solfa || '',
+        leadSinger: (r as any).leadSinger || raw.leadSinger || raw.lead_singer || m.leadSinger || 'Loveworld Singers',
+        writer: (r as any).writer || raw.writer || m.writer || '',
+        category: r.category || raw.category || m.category || 'Praise Night',
+        key: r.key || raw.key || m.key || '',
+        tempo: r.tempo || raw.tempo || m.tempo || '',
+        conductorGuide: raw.conductorGuide || raw.conductor_guide || '',
+      };
+    });
+    res.json({ success: true, count: merged.length, data: merged });
   } catch (err) {
     console.error('[songs/ministered]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
@@ -44,7 +65,28 @@ const getMinisteredSongByIdHandler = async (req: any, res: any) => {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
     }
-    res.json({ success: true, data: song });
+    const m = mergeRawRow(song);
+    const raw = (song.rawData && typeof song.rawData === 'object') ? (song.rawData as Record<string, any>) : {};
+    const audioFile = song.audioFile || raw.audioFile || raw.audioUrl || (m.audioFile as string) || '';
+    res.json({
+      success: true,
+      data: {
+        ...m,
+        id: song.id,
+        title: song.title || raw.title || 'Untitled Song',
+        audioFile,
+        audioUrl: audioFile,
+        audioUrls: song.audioUrls || raw.audioUrls || m.audioUrls || { full: audioFile },
+        lyrics: song.lyrics || raw.lyrics || m.lyrics || '',
+        solfa: song.solfa || raw.solfas || raw.solfa || m.solfa || '',
+        leadSinger: (song as any).leadSinger || raw.leadSinger || raw.lead_singer || m.leadSinger || 'Loveworld Singers',
+        writer: (song as any).writer || raw.writer || m.writer || '',
+        category: song.category || raw.category || m.category || 'Praise Night',
+        key: song.key || raw.key || m.key || '',
+        tempo: song.tempo || raw.tempo || m.tempo || '',
+        conductorGuide: raw.conductorGuide || raw.conductor_guide || '',
+      },
+    });
   } catch (err) {
     console.error('[songs/ministered/:id]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
@@ -940,6 +982,89 @@ router.get('/:id', requireAuth, async (req: any, res: any) => {
   } catch (err) {
     console.error('[songs/:id:GET]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+// POST /songs/import-from-ministered — Import songs from ministered songs into repertoire
+router.post('/import-from-ministered', requireAuth, async (req: any, res: any) => {
+  try {
+    const auth = res.locals.auth;
+    const { songIds, praiseNightId } = req.body;
+    if (!Array.isArray(songIds) || songIds.length === 0) {
+      res.status(400).json({ success: false, error: 'songIds array is required' });
+      return;
+    }
+
+    const ministeredList = await db
+      .select()
+      .from(ministeredSongs)
+      .where(inArray(ministeredSongs.id, songIds));
+
+    const isHq = auth.role === 'hq_admin' || auth.isHq;
+    const zoneId = auth.effectiveZoneId || auth.zoneId || 'hq';
+
+    let importedCount = 0;
+    for (const m of ministeredList) {
+      const newId = `song_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const raw = (m.rawData && typeof m.rawData === 'object') ? { ...(m.rawData as any) } : {};
+      raw.importedFromMinisteredId = m.id;
+      raw.leadSinger = m.leadSinger || raw.leadSinger;
+      const mRaw = (m.rawData && typeof m.rawData === 'object') ? (m.rawData as any) : {};
+      const conductorGuide = mRaw.conductorGuide || mRaw.conductor_guide || mRaw.solfas || '';
+      const history = mRaw.history || '';
+      const praiseId = praiseNightId || mRaw.praiseNightId || mRaw.programId || null;
+
+      raw.importedFromMinisteredId = m.id;
+      raw.leadSinger = mRaw.leadSinger || raw.leadSinger || '';
+      raw.writer = m.writer || raw.writer || '';
+      raw.category = m.category || raw.category || 'Praise Night';
+      raw.key = m.key || raw.key || '';
+      raw.tempo = m.tempo || raw.tempo || '';
+      raw.conductorGuide = conductorGuide;
+      raw.history = history;
+      raw.lyrics = m.lyrics || raw.lyrics || '';
+      raw.audioUrls = m.audioUrls || raw.audioUrls || {};
+      raw.audioFile = m.audioFile || raw.audioFile || '';
+      raw.audioUrl = m.audioFile || raw.audioUrl || '';
+
+      if (isHq) {
+        await db.insert(songs).values({
+          id: newId,
+          title: m.title || 'Untitled Song',
+          writer: m.writer || '',
+          category: m.category || 'Praise Night',
+          key: m.key || '',
+          tempo: m.tempo || '',
+          lyrics: m.lyrics || '',
+          audioFile: m.audioFile || '',
+          audioUrls: m.audioUrls || {},
+          praiseNightId: praiseId,
+          zoneId: 'hq',
+          rawData: raw,
+        });
+      } else {
+        await db.insert(zoneSongs).values({
+          id: newId,
+          title: m.title || 'Untitled Song',
+          category: m.category || 'Praise Night',
+          key: m.key || '',
+          tempo: m.tempo || '',
+          audioFile: m.audioFile || '',
+          zoneId,
+          rawData: raw,
+        });
+      }
+      importedCount++;
+    }
+
+    res.json({
+      success: true,
+      count: importedCount,
+      message: `Successfully imported ${importedCount} song(s) into repertoire.`,
+    });
+  } catch (err) {
+    console.error('[songs/import-from-ministered]', err);
+    res.status(500).json({ success: false, error: 'Failed to import songs' });
   }
 });
 

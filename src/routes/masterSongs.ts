@@ -3,8 +3,18 @@ import { db } from '../db';
 import { ministeredSongs } from '../schema';
 import { eq, asc } from 'drizzle-orm';
 import { mergeRawRow } from '../lib/rawRow';
+import { requireAuth } from '../auth/auth.middleware';
 
 const router = Router();
+
+function requireMasterEditor(req: Request, res: Response, next: any): void {
+  const role = String(res.locals.auth?.role || '').toLowerCase();
+  if (role !== 'hq_admin' && role !== 'admin') {
+    res.status(403).json({ success: false, error: 'Forbidden' });
+    return;
+  }
+  next();
+}
 
 // GET /master & /api/master-songs (Ministered Songs Catalog)
 router.get('/', async (req: Request, res: Response) => {
@@ -87,7 +97,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // POST /master
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireAuth, requireMasterEditor, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const songId = body.id || `master_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -128,7 +138,7 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // PATCH /master/:id
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', requireAuth, requireMasterEditor, async (req: Request, res: Response) => {
   try {
     const songId = req.params.id;
     const body = req.body || {};
@@ -172,7 +182,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 });
 
 // DELETE /master/:id
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireAuth, requireMasterEditor, async (req: Request, res: Response) => {
   try {
     const songId = req.params.id;
     await db.delete(ministeredSongs).where(eq(ministeredSongs.id, songId));

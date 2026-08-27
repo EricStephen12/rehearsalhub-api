@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { eq, desc, inArray, sql, and } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
-import { chats, messages, profiles } from '../schema';
+import { chats, messages, messageReceipts, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast, getUserPresence, getAllPresence } from '../ws/wsServer';
@@ -113,6 +113,22 @@ function shapeChat(row: typeof chats.$inferSelect) {
     lastMessage: lastMessageText,
     lastTimestamp,
   };
+}
+
+function chatParticipants(row: typeof chats.$inferSelect): string[] {
+  const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
+  const participants = Array.isArray(row.participants)
+    ? row.participants
+    : Array.isArray(raw.participants)
+      ? raw.participants
+      : Array.isArray(raw.memberIds)
+        ? raw.memberIds
+        : [];
+  return participants.map(String);
+}
+
+function canAccessChat(row: typeof chats.$inferSelect, userId: string): boolean {
+  return row.createdBy === userId || chatParticipants(row).includes(userId);
 }
 
 async function hydrateChats(chatRows: (typeof chats.$inferSelect)[]) {
@@ -243,6 +259,10 @@ router.get('/:chatId', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
     }
+    if (!canAccessChat(row, res.locals.auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const [hydrated] = await hydrateChats([row]);
     res.json({ success: true, data: hydrated });
   } catch (err) {
@@ -336,6 +356,10 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
     }
+    if (!canAccessChat(existing, res.locals.auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
 
     const prevRaw = (existing.rawData && typeof existing.rawData === 'object')
       ? (existing.rawData as Record<string, any>)
@@ -361,6 +385,11 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
       : Array.isArray(participants)
         ? participants
         : existing.participants;
+
+    if ((Array.isArray(member_ids) || Array.isArray(participants) || admins !== undefined) && existing.createdBy !== res.locals.auth.userId) {
+      res.status(403).json({ success: false, error: 'Only the chat creator can change members or administrators' });
+      return;
+    }
 
     const nextRaw = {
       ...prevRaw,
@@ -398,6 +427,15 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
 router.delete('/:chatId', requireAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat) {
+      res.status(404).json({ success: false, error: 'Chat not found' });
+      return;
+    }
+    if (chat.createdBy !== res.locals.auth.userId) {
+      res.status(403).json({ success: false, error: 'Only the chat creator can delete this chat' });
+      return;
+    }
     await db.delete(messages).where(eq(messages.chatId, chatId));
     await db.delete(chats).where(eq(chats.id, chatId));
     broadcast('chat_deleted', chatId, { id: chatId });
@@ -412,6 +450,11 @@ router.delete('/:chatId', requireAuth, async (req, res) => {
 router.delete('/:chatId/messages', requireAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat || !canAccessChat(chat, res.locals.auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     await db.delete(messages).where(eq(messages.chatId, chatId));
     broadcast('chat_cleared', chatId, { chatId });
     res.json({ success: true, message: 'All messages cleared' });
@@ -424,6 +467,15 @@ router.delete('/:chatId/messages', requireAuth, async (req, res) => {
 // GET /chats/:chatId/messages
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {
+    const [chat] = await db.select().from(chats).where(eq(chats.id, req.params.chatId)).limit(1);
+    if (!chat) {
+      res.status(404).json({ success: false, error: 'Chat not found' });
+      return;
+    }
+    if (!canAccessChat(chat, res.locals.auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const messageRows = await db.select().from(messages).where(eq(messages.chatId, req.params.chatId));
     
     // Sort chronologically by createdAt from rawData
@@ -535,6 +587,14 @@ router.post('/:chatId/read', requireAuth, async (req: any, res) => {
     const currentUserId = auth.userId as string;
 
     const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!existingChat) {
+      res.status(404).json({ success: false, error: 'Chat not found' });
+      return;
+    }
+    if (!canAccessChat(existingChat, currentUserId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     if (existingChat) {
       const unread = (typeof existingChat.unreadCount === 'object' && existingChat.unreadCount !== null)
         ? { ...(existingChat.unreadCount as Record<string, number>) }
@@ -555,18 +615,89 @@ router.post('/:chatId/read', requireAuth, async (req: any, res) => {
   }
 });
 
+// PATCH /chats/messages/:messageId/status — Update delivery/read state.
+router.patch('/messages/:messageId/status', requireAuth, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const status = req.body?.status;
+    if (status !== 'delivered' && status !== 'read') {
+      res.status(400).json({ success: false, error: 'Invalid message status' });
+      return;
+    }
+
+    const [message] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+    if (!message) {
+      res.status(404).json({ success: false, error: 'Message not found' });
+      return;
+    }
+    const [chat] = await db.select().from(chats).where(eq(chats.id, message.chatId)).limit(1);
+    if (!chat || !canAccessChat(chat, res.locals.auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    const recipientId = res.locals.auth.userId as string;
+    const deviceId = String(req.body?.deviceId || req.headers['x-device-id'] || 'web').trim();
+    if (!deviceId || deviceId.length > 200) {
+      res.status(400).json({ success: false, error: 'Invalid device id' });
+      return;
+    }
+    const receiptId = `${messageId}:${recipientId}:${deviceId}`;
+    await db.insert(messageReceipts).values({
+      id: receiptId,
+      messageId,
+      recipientId,
+      deviceId,
+      status,
+      updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: messageReceipts.id,
+      set: { status, updatedAt: new Date() },
+    });
+    const receipt = { messageId, recipientId, deviceId, status, updatedAt: new Date().toISOString() };
+    broadcast('message_receipt', message.chatId, receipt);
+    res.json({ success: true, data: receipt });
+  } catch (err) {
+    console.error('[chats:message-status]', err);
+    res.status(500).json({ success: false, error: 'Failed to update message status' });
+  }
+});
+
 // POST /chats/:chatId/messages — Send message
 router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
   try {
     const { chatId } = req.params;
     const auth = res.locals.auth;
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat) {
+      res.status(404).json({ success: false, error: 'Chat not found' });
+      return;
+    }
+    if (!canAccessChat(chat, auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const text = req.body.text?.trim() || req.body.content?.trim() || '';
     if (!text && !req.body.imageUrl && !req.body.media_url && !req.body.mediaUrl && !req.body.attachment && !req.body.voiceUrl && !req.body.audioUrl && !req.body.songData && !req.body.playlistData && !req.body.profileData && !req.body.contactData) {
       res.status(400).json({ success: false, error: 'Message content is required' });
       return;
     }
 
-    const id = crypto.randomUUID();
+    const requestedMessageId = typeof req.body.id === 'string' ? req.body.id.trim() : '';
+    const id = requestedMessageId || crypto.randomUUID();
+    if (id.length > 200) {
+      res.status(400).json({ success: false, error: 'Message id is too long' });
+      return;
+    }
+    const [alreadyCreated] = await db.select().from(messages).where(eq(messages.id, id)).limit(1);
+    if (alreadyCreated) {
+      if (alreadyCreated.chatId !== chatId || alreadyCreated.senderId !== auth.userId) {
+        res.status(409).json({ success: false, error: 'Message id is already in use' });
+        return;
+      }
+      res.status(200).json({ success: true, data: alreadyCreated, duplicate: true });
+      return;
+    }
     const now = new Date().toISOString();
     const senderName = req.body.senderName || req.body.sender_name || 'User';
     const isSenderAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
@@ -666,6 +797,11 @@ router.post('/:chatId/messages/:messageId/reactions', requireAuth, async (req, r
       res.status(404).json({ success: false, error: 'Message not found' });
       return;
     }
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat || !canAccessChat(chat, userId) || existing.chatId !== chatId) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
 
     const prevRaw = (existing.rawData && typeof existing.rawData === 'object')
       ? (existing.rawData as Record<string, any>)
@@ -718,6 +854,11 @@ router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Message not found' });
       return;
     }
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat || existing.chatId !== chatId || !canAccessChat(chat, auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
 
     const prevRaw = (existing.rawData && typeof existing.rawData === 'object')
       ? (existing.rawData as Record<string, any>)
@@ -757,6 +898,11 @@ router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
 router.delete('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
   try {
     const { chatId, messageId } = req.params;
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat || !canAccessChat(chat, res.locals.auth.userId)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     await db.delete(messages).where(eq(messages.id, messageId));
     broadcast('message_deleted', chatId, { messageId });
     broadcast('messages', chatId, { id: messageId, deleted: true });

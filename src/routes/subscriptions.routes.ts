@@ -134,13 +134,13 @@ router.post('/:userId/revoke', requireAuth, async (req, res) => {
   try {
     const { userId } = req.params;
     const auth = res.locals.auth;
-    if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
+    if (auth.userId !== userId && auth.role !== 'hq_admin' && auth.role !== 'admin') {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
 
     await db.update(individualSubscriptions)
-      .set({ status: 'revoked', updatedAt: new Date() })
+      .set({ status: 'cancelled', updatedAt: new Date() })
       .where(eq(individualSubscriptions.userId, userId));
 
     res.json({ success: true, message: 'Subscription revoked' });

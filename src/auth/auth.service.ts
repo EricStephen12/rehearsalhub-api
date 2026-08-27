@@ -54,7 +54,9 @@ export function tokenRole(profile: {
 }): string {
   if (profile.hasHqAccess) return 'hq_admin';
   const r = (profile.role || '').toLowerCase();
-  if (r === 'admin' || r === 'hq_admin' || r === 'zone_admin') return r;
+  if (r === 'admin' || r === 'hq_admin' || r === 'super_admin') return 'hq_admin';
+  if (r === 'zone_admin' || r === 'zone_coordinator' || r === 'subgroup_admin' || r === 'subgroup_coordinator') return 'zone_admin';
+  if (r === 'church_coordinator') return 'church_coordinator';
   return 'member';
 }
 

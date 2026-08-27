@@ -7,8 +7,7 @@ import crypto from 'crypto';
 
 const router = Router();
 
-// In a real application, you'd use your actual KingsPay API Key from environment variables.
-const KINGSPAY_API_KEY = process.env.KINGSPAY_API_KEY || 'mock_key';
+const KINGSPAY_API_KEY = process.env.KINGSPAY_API_KEY || '';
 
 /** 
  * POST /initialize
@@ -16,9 +15,14 @@ const KINGSPAY_API_KEY = process.env.KINGSPAY_API_KEY || 'mock_key';
  */
 router.post('/initialize', requireAuth, async (req, res) => {
   try {
+    if (!KINGSPAY_API_KEY) {
+      res.status(503).json({ success: false, error: 'Payments are not configured on this server.' });
+      return;
+    }
+
     const { amount, userId, userEmail, type, duration } = req.body;
 
-    if (!amount || !userId || !type) {
+    if (!amount || !userId || !type || userId !== res.locals.auth.userId) {
       res.status(400).json({ success: false, error: 'Missing required payment fields.' });
       return;
     }
@@ -31,15 +35,7 @@ router.post('/initialize', requireAuth, async (req, res) => {
     // });
     // const data = await response.json();
 
-    // 2. Generate a secure, unique mock payment ID
-    const mockPaymentId = `kp_${crypto.randomBytes(16).toString('hex')}`;
-
-    // For this implementation, we will simulate a successful initialization.
-    res.json({
-      success: true,
-      payment_id: mockPaymentId,
-      message: 'Payment initialized successfully.'
-    });
+    res.status(501).json({ success: false, error: 'KingsPay transaction initialization is not implemented.' });
 
   } catch (err) {
     console.error('[kingspay/initialize]', err);
@@ -54,9 +50,19 @@ router.post('/initialize', requireAuth, async (req, res) => {
  */
 router.post('/webhook', async (req, res) => {
   try {
-    // 1. Verify webhook signature (Mocked for now)
-    // const signature = req.headers['x-kingspay-signature'];
-    // if (!verifySignature(req.body, signature, process.env.KINGSPAY_WEBHOOK_SECRET)) throw new Error('Invalid sig');
+    const webhookSecret = process.env.KINGSPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-kingspay-signature'];
+    if (!webhookSecret || typeof signature !== 'string') {
+      res.status(503).send('Webhook verification is not configured');
+      return;
+    }
+    const expected = crypto.createHmac('sha256', webhookSecret).update(JSON.stringify(req.body)).digest('hex');
+    const supplied = Buffer.from(signature, 'utf8');
+    const calculated = Buffer.from(expected, 'utf8');
+    if (supplied.length !== calculated.length || !crypto.timingSafeEqual(supplied, calculated)) {
+      res.status(401).send('Invalid webhook signature');
+      return;
+    }
 
     const { event, data } = req.body;
     

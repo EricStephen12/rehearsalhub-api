@@ -266,7 +266,9 @@ router.get('/:userId', requireAuth, async (req, res) => {
     res.status(404).json({ success: false, error: 'Profile not found' });
     return;
   }
-  res.json({ success: true, data: profile });
+  const auth = res.locals.auth;
+  const canViewPrivate = auth.userId === userId || auth.role === 'hq_admin' || auth.role === 'admin';
+  res.json({ success: true, data: canViewPrivate ? profile : directoryDto(profile) });
 });
 
 // PATCH /profiles/:userId

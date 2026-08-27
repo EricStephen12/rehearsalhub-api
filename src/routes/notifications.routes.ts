@@ -110,6 +110,10 @@ router.get('/', requireAuth, async (req, res) => {
         const senderName = (raw.sender_name as string) || (raw.senderName as string) || (raw.sentBy as string) || (merged.sender_name as string) || (merged.senderName as string) || 'HQ Administrator';
         const sentBy = senderName;
         const createdAt = row.createdAt || (raw.created_at as string) || (raw.createdAt as string) || (merged.created_at as string) || new Date().toISOString();
+        const isRead = readIds.has(row.id) 
+          || (row as any).isRead === true 
+          || (raw.is_read === true && (!targetUser || targetUser === userId)) 
+          || (raw.isRead === true && (!targetUser || targetUser === userId));
 
         return {
           ...merged,
@@ -126,7 +130,7 @@ router.get('/', requireAuth, async (req, res) => {
           createdAt,
           created_at: createdAt,
           sentAt: createdAt,
-          is_read: readIds.has(row.id),
+          is_read: isRead,
         };
       })
       .filter((n): n is NonNullable<typeof n> => n !== null);
@@ -259,8 +263,8 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
     // 1. Read receipt toggle
     if (is_read !== undefined) {
+      const receiptId = `${userId}_${notifId}`;
       if (is_read === true) {
-        const receiptId = `${userId}_${notifId}`;
         const [existing] = await db
           .select()
           .from(userNotifications)
@@ -278,8 +282,23 @@ router.patch('/:id', requireAuth, async (req, res) => {
           });
         }
       } else {
-        await db.delete(userNotifications).where(eq(userNotifications.id, `${userId}_${notifId}`));
+        await db.delete(userNotifications).where(eq(userNotifications.id, receiptId));
       }
+
+      // Also update notification record directly if target_user_id matches
+      try {
+        const [notifRecord] = await db.select().from(notifications).where(eq(notifications.id, notifId)).limit(1);
+        if (notifRecord) {
+          const raw = (notifRecord.rawData && typeof notifRecord.rawData === 'object') ? { ...(notifRecord.rawData as any) } : {};
+          if (notifRecord.targetUserId === userId || raw.target_user_id === userId || raw.targetUserId === userId) {
+            raw.is_read = is_read;
+            raw.isRead = is_read;
+            await db.update(notifications)
+              .set({ isRead: is_read, rawData: raw })
+              .where(eq(notifications.id, notifId));
+          }
+        }
+      } catch {}
     }
 
     // 2. Admin field update (title, message, category, priority, etc.)
@@ -411,6 +430,41 @@ router.patch('/read-all', requireAuth, async (req, res) => {
     res.json({ success: true, marked: toInsert.length });
   } catch (err) {
     console.error('[notifications/read-all PATCH]', err);
+    res.status(500).json({ success: false, error: 'Something went wrong' });
+  }
+});
+
+router.post('/read-all', requireAuth, async (req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const notifRows = await db.select({ id: notifications.id }).from(notifications);
+
+    const existingReceipts = await db
+      .select({ id: userNotifications.id })
+      .from(userNotifications)
+      .where(sql`${userNotifications.id} LIKE ${userId + '_%'}`);
+    const existingIds = new Set(existingReceipts.map((r) => r.id));
+
+    const toInsert = notifRows
+      .filter((n) => !existingIds.has(`${userId}_${n.id}`))
+      .map((n) => ({
+        id: `${userId}_${n.id}`,
+        rawData: {
+          user_id: userId,
+          notification_id: n.id,
+          read_at: new Date().toISOString(),
+        },
+      }));
+
+    if (toInsert.length > 0) {
+      for (let i = 0; i < toInsert.length; i += 50) {
+        await db.insert(userNotifications).values(toInsert.slice(i, i + 50));
+      }
+    }
+
+    res.json({ success: true, marked: toInsert.length });
+  } catch (err) {
+    console.error('[notifications/read-all POST]', err);
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
 });

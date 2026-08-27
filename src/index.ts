@@ -35,6 +35,7 @@ import uploadRouter from './routes/upload.routes';
 import momentsRouter from './routes/moments.routes';
 import { writesRouter } from './routes/writes.routes';
 import livekitRouter from './routes/livekit.routes';
+import internalCronRouter from './routes/internal-cron.routes';
 import { createWsServer } from './ws/wsServer';
 import { tenantMiddleware } from './middleware/tenant.middleware';
 
@@ -132,6 +133,7 @@ app.use('/api/moments', momentsRouter);
 app.use('/upcoming-events', upcomingEventsRouter);
 app.use('/events', upcomingEventsRouter);
 app.use('/calendar-events', upcomingEventsRouter);
+app.use('/internal/cron', internalCronRouter);
 
 // LiveKit token generation — used by mobile app (GET) and web portal (POST)
 // Returns a signed JWT token + server URL for joining a call room
@@ -162,11 +164,6 @@ app.get('/api/settings/:id', apiKeyAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: 'Something went wrong' });
   }
-});
-
-// Health check — used by mobile app to verify connectivity (no auth required)
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, ts: Date.now() });
 });
 
 // Global error handler

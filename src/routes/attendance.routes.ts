@@ -114,12 +114,47 @@ router.get('/mine', requireAuth, async (_req, res) => {
 const handleCheckIn = async (req: any, res: any) => {
   try {
     const auth = res.locals.auth;
-    const id = crypto.randomUUID();
+    const requestedId = typeof req.body.id === 'string' ? req.body.id.trim() : '';
+    const id = requestedId || crypto.randomUUID();
+    if (id.length > 200) {
+      res.status(400).json({ success: false, error: 'Attendance id is too long' });
+      return;
+    }
+    const [alreadyRecorded] = await db.select().from(attendance).where(eq(attendance.id, id)).limit(1);
+    if (alreadyRecorded) {
+      const existingRaw = (alreadyRecorded.rawData && typeof alreadyRecorded.rawData === 'object')
+        ? alreadyRecorded.rawData as Record<string, any>
+        : {};
+      const recordedBy = alreadyRecorded.recordedByAdminId || existingRaw.recordedBy || alreadyRecorded.userId;
+      if (!req.tenant?.isHQAdmin && recordedBy !== auth.userId && alreadyRecorded.userId !== auth.userId) {
+        res.status(403).json({ success: false, error: 'Forbidden' });
+        return;
+      }
+      res.status(200).json({ success: true, message: 'Attendance already recorded', data: shapeAttendance(alreadyRecorded), duplicate: true });
+      return;
+    }
     const now = new Date().toISOString();
     const dateString = new Date().toLocaleDateString('en-CA');
 
-    const targetUserId = req.body.userId || auth.userId;
+    const qrCode = String(req.body.qrCode || req.body.qr_code || '').trim();
+    let targetUserId = req.body.userId || auth.userId;
+    if (qrCode) {
+      const [qrProfile] = await db.select().from(profiles).where(
+        sql`${profiles.rawData}->>'qrCode' = ${qrCode} OR
+            ${profiles.rawData}->>'qr_code' = ${qrCode} OR
+            ${profiles.id} = ${qrCode}`
+      ).limit(1);
+      if (!qrProfile) {
+        res.status(404).json({ success: false, error: 'Singer QR code was not found.' });
+        return;
+      }
+      targetUserId = qrProfile.id;
+    }
     const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, targetUserId)).limit(1);
+    if (!userProfile) {
+      res.status(404).json({ success: false, error: 'Singer profile was not found.' });
+      return;
+    }
     const rawProfile = (userProfile?.rawData && typeof userProfile.rawData === 'object') ? (userProfile.rawData as Record<string, any>) : {};
 
     const requestedZone = req.body.zoneId || req.body.zone_id;

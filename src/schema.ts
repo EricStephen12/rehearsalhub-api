@@ -375,6 +375,15 @@ export const messages = pgTable('messages', {
   rawData: jsonb('raw_data'),
 });
 
+export const messageReceipts = pgTable('message_receipts', {
+  id: text('id').primaryKey(),
+  messageId: text('message_id').notNull(),
+  recipientId: text('recipient_id').notNull(),
+  deviceId: text('device_id').notNull(),
+  status: text('status').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 /** Backward compatibility alias */
 export const messagesV2 = messages;
 
@@ -384,10 +393,10 @@ export const messagesV2 = messages;
  */
 export const calls = pgTable('calls', {
   id: text('id').primaryKey(),
-  callerId: text('caller_id').notNull(),
+  callerId: text('caller_id'),
   callerName: text('caller_name'),
   callerAvatar: text('caller_avatar'),
-  receiverId: text('receiver_id').notNull(),
+  receiverId: text('receiver_id'),
   type: text('type').default('voice'),
   status: text('status').default('ringing'),
   chatId: text('chat_id'),
@@ -395,6 +404,7 @@ export const calls = pgTable('calls', {
   startedAt: timestamp('started_at'),
   endedAt: timestamp('ended_at'),
   createdAt: timestamp('created_at').defaultNow(),
+  rawData: jsonb('raw_data'),
 });
 
 /** Backward compatibility alias */

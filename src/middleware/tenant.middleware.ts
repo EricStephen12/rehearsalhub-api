@@ -64,7 +64,7 @@ export function resolveTenantScope(req: Request, auth: any): TenantScope {
 
   const role: string = (auth.role || '').toLowerCase();
   const isHQAdmin = HQ_ROLES.has(role);
-  const isZoneAdmin = role === 'zone_admin';
+  const isZoneAdmin = role === 'zone_admin' || role === 'zone_coordinator' || role === 'subgroup_admin' || role === 'subgroup_coordinator';
   const isChurchCoordinator = role === 'church_coordinator';
 
   // Read client-requested scope headers (only trusted for HQ Admins)
@@ -110,7 +110,7 @@ export function resolveTenantScope(req: Request, auth: any): TenantScope {
     mode = effectiveZoneId ? 'zone' : 'global';
   } else {
     // Regular members — lock to their JWT zone
-    effectiveZoneId = auth.zoneId || queryZoneId || null;
+    effectiveZoneId = auth.zoneId || null;
     effectiveChurchId = null;
     mode = effectiveZoneId ? 'zone' : 'global';
   }

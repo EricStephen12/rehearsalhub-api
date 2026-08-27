@@ -21,13 +21,11 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
       return;
     }
 
-    const activeZoneHeader = (req.headers['x-zone-id'] as string) || (req.headers['x-zone-code'] as string) || (req.query.zoneId as string) || (req.query.zone_code as string);
-
     const authData = {
       userId: payload.sub,
       role: payload.role,
-      /** zoneId from JWT claim — this is the source of truth, not the header */
-      zoneId: payload.zoneId || activeZoneHeader || null,
+      /** Tenant identity comes from the signed token; headers only select HQ views. */
+      zoneId: payload.zoneId || null,
       /** churchId from JWT claim — set for church_coordinator role */
       churchId: payload.churchId || null,
       jti: payload.jti,

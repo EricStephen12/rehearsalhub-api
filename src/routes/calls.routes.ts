@@ -1,25 +1,38 @@
 import { Router } from 'express';
-import { eq, or, desc, and, inArray } from 'drizzle-orm';
+import { eq, or, desc, and, inArray, sql } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
-import { calls } from '../schema';
+import { calls, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { broadcast } from '../ws/wsServer';
+import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
-
-import { profiles } from '../schema';
 
 // GET /calls — Call history for current user
 router.get('/', requireAuth, async (req, res) => {
   try {
     const auth = res.locals.auth;
-    const userCalls = await db.select().from(calls)
-      .where(or(eq(calls.callerId, auth.userId), eq(calls.receiverId, auth.userId)))
-      .orderBy(desc(calls.createdAt))
-      .limit(50);
+    const userId = auth.userId as string;
 
-    const userIds = Array.from(new Set(userCalls.flatMap(c => [c.callerId, c.receiverId]).filter(Boolean)));
+    const userCalls = await db.select().from(calls)
+      .where(
+        sql`${calls.callerId} = ${userId} 
+          OR ${calls.receiverId} = ${userId} 
+          OR ${calls.rawData}->>'callerId' = ${userId} 
+          OR ${calls.rawData}->>'receiverId' = ${userId} 
+          OR ${calls.rawData}->>'caller_id' = ${userId} 
+          OR ${calls.rawData}->>'receiver_id' = ${userId} 
+          OR ${calls.rawData}->'participants' ? ${userId}`
+      )
+      .orderBy(desc(calls.createdAt))
+      .limit(100);
+
+    const userIds = Array.from(new Set(userCalls.flatMap(c => {
+      const raw = (c.rawData && typeof c.rawData === 'object') ? (c.rawData as any) : {};
+      return [c.callerId, c.receiverId, raw.callerId, raw.receiverId, raw.caller_id, raw.receiver_id];
+    }).filter(Boolean)));
+
     const profileMap: Record<string, { name: string; avatar: string | null }> = {};
     if (userIds.length > 0) {
       const userProfiles = await db.select().from(profiles).where(inArray(profiles.id, userIds));
@@ -32,18 +45,45 @@ router.get('/', requireAuth, async (req, res) => {
     }
 
     const enrichedCalls = userCalls.map(c => {
-      const callerProf = profileMap[c.callerId];
-      const receiverProf = profileMap[c.receiverId];
+      const merged = mergeRawRow(c);
+      const raw = (c.rawData && typeof c.rawData === 'object') ? (c.rawData as any) : {};
+      
+      const callerId = c.callerId || raw.callerId || raw.caller_id;
+      const receiverId = c.receiverId || raw.receiverId || raw.receiver_id;
+      const callerProf = profileMap[callerId];
+      const receiverProf = profileMap[receiverId];
+
+      let rawTime = raw.timestamp || raw.startedAt || raw.createdAt || c.startedAt || c.createdAt;
+      let timestampISO = new Date().toISOString();
+      if (rawTime) {
+        if (typeof rawTime === 'object' && rawTime._seconds) {
+          timestampISO = new Date(rawTime._seconds * 1000).toISOString();
+        } else if (rawTime instanceof Date) {
+          timestampISO = rawTime.toISOString();
+        } else if (typeof rawTime === 'string') {
+          timestampISO = rawTime;
+        }
+      }
+
       return {
-        ...c,
-        callerName: (c.callerName && c.callerName !== 'Caller') ? c.callerName : (callerProf?.name || c.callerName || 'Caller'),
-        callerAvatar: c.callerAvatar || callerProf?.avatar || null,
-        receiverName: receiverProf?.name || 'Member',
-        receiverAvatar: receiverProf?.avatar || null,
+        ...merged,
+        id: c.id,
+        callerId,
+        receiverId,
+        callerName: (raw.callerName && raw.callerName !== 'Caller') ? raw.callerName : (callerProf?.name || c.callerName || 'Caller'),
+        callerAvatar: c.callerAvatar || raw.callerAvatar || callerProf?.avatar || null,
+        receiverName: raw.receiverName || receiverProf?.name || 'Member',
+        receiverAvatar: raw.receiverAvatar || receiverProf?.avatar || null,
+        type: c.type || raw.type || 'voice',
+        status: c.status || raw.status || 'ended',
+        duration: raw.duration || 0,
+        chatId: c.chatId || raw.chatId || raw.chat_id,
+        createdAt: timestampISO,
+        timestamp: timestampISO,
       };
     });
 
-    res.json({ success: true, data: enrichedCalls });
+    res.json({ success: true, count: enrichedCalls.length, data: enrichedCalls });
   } catch (err) {
     console.error('[calls:get]', err);
     res.status(500).json({ success: false, error: 'Failed to load call history' });
@@ -57,6 +97,10 @@ router.get('/:callId', requireAuth, async (req, res) => {
     if (!call) { 
       res.status(404).json({ success: false, error: 'Call not found' }); 
       return; 
+    }
+    if (call.callerId !== res.locals.auth.userId && call.receiverId !== res.locals.auth.userId) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
     }
     res.json({ success: true, data: call });
   } catch (err) {
@@ -84,8 +128,13 @@ router.post('/', requireAuth, async (req, res) => {
     } = req.body;
 
     const targetReceiverId = receiver_id || receiverId;
-    if (!targetReceiverId) {
+    if (!targetReceiverId || targetReceiverId === auth.userId) {
       res.status(400).json({ success: false, error: 'receiver_id is required' });
+      return;
+    }
+    const [receiver] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, targetReceiverId)).limit(1);
+    if (!receiver) {
+      res.status(404).json({ success: false, error: 'Receiver not found' });
       return;
     }
 
@@ -119,10 +168,19 @@ router.patch('/:callId', requireAuth, async (req, res) => {
     const { callId } = req.params;
     const { status } = req.body;
     const auth = res.locals.auth;
+    const allowedStatuses = new Set(['ringing', 'answered', 'accepted', 'ended', 'declined', 'missed']);
+    if (typeof status !== 'string' || !allowedStatuses.has(status)) {
+      res.status(400).json({ success: false, error: 'Invalid call status' });
+      return;
+    }
 
     const [existing] = await db.select().from(calls).where(eq(calls.id, callId)).limit(1);
     if (!existing) {
       res.status(404).json({ success: false, error: 'Call not found' });
+      return;
+    }
+    if (existing.callerId !== auth.userId && existing.receiverId !== auth.userId) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
 
@@ -143,8 +201,8 @@ router.patch('/:callId', requireAuth, async (req, res) => {
       .returning();
 
     broadcast('call', callId, updated);
-    broadcast('call_status', existing.receiverId, updated);
-    broadcast('call_status', existing.callerId, updated);
+    if (existing?.receiverId) broadcast('call_status', existing.receiverId, updated);
+    if (existing?.callerId) broadcast('call_status', existing.callerId, updated);
     res.json({ success: true, data: updated });
   } catch (err) {
     console.error('[calls/:id:patch]', err);
@@ -164,8 +222,16 @@ router.post('/:callId/signal', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Call not found' });
       return;
     }
+    if (call.callerId !== auth.userId && call.receiverId !== auth.userId) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
 
     const destination = targetUserId || (call.callerId === auth.userId ? call.receiverId : call.callerId);
+    if (destination !== call.callerId && destination !== call.receiverId) {
+      res.status(403).json({ success: false, error: 'Forbidden destination' });
+      return;
+    }
 
     broadcast('call_signal', destination, {
       callId,

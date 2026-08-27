@@ -1,10 +1,13 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import crypto from 'crypto';
 
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || 'b2e5411830e116cf4ce6e91e90843db0';
 const bucketName = process.env.R2_BUCKET_NAME || 'rehearsalhub-media';
-const accessKeyId = process.env.R2_ACCESS_KEY_ID || '';
-const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
+const accessKeyId = process.env.R2_ACCESS_KEY_ID || '53609880149dce49393f0d762b8b4baf';
+const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY || 'dfec6c0153c47aa9c036d9e8bbbe2739ec738352f55afa2f8fd70df95f67ae90';
 const publicUrlBase = (process.env.R2_PUBLIC_URL || 'https://pub-cb7697578fcc48d3b3aeb70a47eb2f65.r2.dev').replace(/\/+$/, '');
 
 export const r2Client = new S3Client({

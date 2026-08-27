@@ -135,55 +135,6 @@ writesRouter.patch('/chats/:chatId', requireAuth, async (req, res) => {
   res.json({ success: true, data: updated });
 });
 
-writesRouter.post('/chats/:chatId/messages', requireAuth, async (req, res) => {
-  const { chatId } = req.params;
-  const auth = res.locals.auth;
-
-  const schema = z.object({
-    content: z.string().min(1),
-    type: z.string().default('text'),
-    media_url: z.string().url().optional(),
-    reply_to: z.string().optional(),
-  });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
-
-  const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, chatId)).limit(1);
-  if (!chat) { notFound(res); return; }
-  if (!chatMemberIds(chat).includes(auth.userId)) { forbidden(res); return; }
-
-  const [msg] = await db.insert(messagesV2).values({
-    id: crypto.randomUUID(),
-    chatId,
-    senderId: auth.userId,
-    text: parsed.data.content,
-    type: parsed.data.type,
-    status: 'sent',
-    rawData: {
-      content: parsed.data.content,
-      mediaUrl: parsed.data.media_url,
-      replyTo: parsed.data.reply_to,
-    },
-  }).returning();
-
-  const prevRaw =
-    chat.rawData && typeof chat.rawData === 'object' ? (chat.rawData as Record<string, unknown>) : {};
-  const [updatedChat] = await db.update(chatsV2)
-    .set({
-      rawData: {
-        ...prevRaw,
-        lastMessage: parsed.data.content,
-        lastMessageAt: new Date().toISOString(),
-      },
-    })
-    .where(eq(chatsV2.id, chatId))
-    .returning();
-
-  broadcast('messages', chatId, msg);
-  broadcast('chat', chatId, updatedChat);
-  res.status(201).json({ success: true, data: msg });
-});
-
 // PATCH /chats/:chatId/messages/:msgId — edit text, star, or pin a message
 writesRouter.patch('/chats/:chatId/messages/:msgId', requireAuth, async (req, res) => {
   const { chatId, msgId } = req.params;

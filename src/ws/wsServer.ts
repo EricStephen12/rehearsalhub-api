@@ -3,6 +3,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
 import { verifyAccessToken } from '../auth/token';
 import { revocationStore } from '../auth/revocation';
+import { db } from '../db';
+import { chats, calls } from '../schema';
+import { eq } from 'drizzle-orm';
 
 type SubscriptionKey = `${string}:${string}`;
 
@@ -21,11 +24,18 @@ const subscriptions = new Map<string, Set<SubscriptionKey>>();
 const connections = new Map<string, AuthenticatedSocket>();
 const userSocketCounts = new Map<string, number>();
 const userPresenceMap = new Map<string, UserPresence>();
+const eventHistory: Array<{ sequence: number; resource: string; id: string; data: unknown }> = [];
+let nextEventSequence = 1;
+const MAX_EVENT_HISTORY = 5000;
 
 let wss: WebSocketServer | null = null;
 
 // ── Broadcast an event to all subscribers of a resource ──────────────────────
 export function broadcast(resource: string, id: string, data: unknown): void {
+  const event = { sequence: nextEventSequence++, resource, id, data };
+  eventHistory.push(event);
+  if (eventHistory.length > MAX_EVENT_HISTORY) eventHistory.shift();
+
   const specificKey: SubscriptionKey = `${resource}:${id}`;
   const allKey: SubscriptionKey = `${resource}:all`;
 
@@ -46,7 +56,7 @@ export function broadcast(resource: string, id: string, data: unknown): void {
     const socket = connections.get(connId);
     if (!socket || socket.readyState !== WebSocket.OPEN) continue;
 
-    socket.send(JSON.stringify({ type: 'event', resource, id, data }));
+    socket.send(JSON.stringify({ type: 'event', ...event }));
   }
 }
 
@@ -135,16 +145,47 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
 
     handleUserConnected(socket.userId);
 
-    socket.on('message', (raw) => {
+    socket.on('message', async (raw) => {
       let msg: any;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
 
       const connSubs = subscriptions.get(socket.connectionId)!;
 
       if (msg.type === 'subscribe' && typeof msg.resource === 'string' && typeof msg.id === 'string') {
+        const chatResources = new Set(['chat', 'chats', 'messages', 'chat_deleted', 'chat_cleared', 'message_reaction', 'message_receipt']);
+        const callResources = new Set(['call', 'calls', 'incoming_call', 'call_status', 'call_signal']);
+        const privateResources = new Set([...chatResources, ...callResources]);
+        if (privateResources.has(msg.resource) && msg.id === 'all') {
+          socket.send(JSON.stringify({ type: 'error', error: 'Wildcard subscription is not allowed for private resources' }));
+          return;
+        }
+        if (chatResources.has(msg.resource) && msg.id !== 'all') {
+          const [chat] = await db.select().from(chats).where(eq(chats.id, msg.id)).limit(1);
+          const participants = Array.isArray(chat?.participants) ? chat.participants.map(String) : [];
+          const rawChat = chat?.rawData && typeof chat.rawData === 'object' ? chat.rawData as Record<string, any> : {};
+          const rawParticipants = Array.isArray(rawChat.participants) ? rawChat.participants.map(String) : [];
+          if (!chat || (chat.createdBy !== socket.userId && !participants.includes(socket.userId) && !rawParticipants.includes(socket.userId))) {
+            socket.send(JSON.stringify({ type: 'error', error: 'Forbidden subscription' }));
+            return;
+          }
+        }
+        if (callResources.has(msg.resource) && msg.id !== 'all' && msg.id !== socket.userId) {
+          const [call] = await db.select().from(calls).where(eq(calls.id, msg.id)).limit(1);
+          if (!call || (call.callerId !== socket.userId && call.receiverId !== socket.userId)) {
+            socket.send(JSON.stringify({ type: 'error', error: 'Forbidden subscription' }));
+            return;
+          }
+        }
         const key: SubscriptionKey = `${msg.resource}:${msg.id}`;
         connSubs.add(key); // Set deduplicates automatically
         socket.send(JSON.stringify({ type: 'subscribed', resource: msg.resource, id: msg.id }));
+
+        const since = Number(msg.since);
+        if (Number.isFinite(since) && since >= 0) {
+          eventHistory
+            .filter((event) => event.sequence > since && event.resource === msg.resource && (event.id === msg.id || msg.id === 'all'))
+            .forEach((event) => socket.send(JSON.stringify({ type: 'event', ...event })));
+        }
 
         // If subscribing to presence, send current presence immediately
         if (msg.resource === 'presence') {
