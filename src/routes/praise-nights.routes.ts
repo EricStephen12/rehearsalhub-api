@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { eq, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { programs, zonePrograms, songs } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
@@ -193,7 +193,7 @@ router.get('/zone/all', requireAuth, async (req, res) => {
 });
 
 // POST /programs or /praise-nights — Create program
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { name, date, zoneId, scope, category, status, location, bannerImage, songs, songIds } = req.body;
     const programId = req.body.id || `prog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -248,7 +248,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PATCH /programs/:id/status — Toggle program status (ongoing, pre-rehearsal, archive, draft)
-router.patch('/:id/status', requireAuth, async (req, res) => {
+router.patch('/:id/status', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { status } = req.body;
     if (!status) {
@@ -287,7 +287,7 @@ router.patch('/:id/status', requireAuth, async (req, res) => {
 });
 
 // POST /programs/:id/duplicate — Duplicate a program & its song list within a zone
-router.post('/:id/duplicate', requireAuth, async (req, res) => {
+router.post('/:id/duplicate', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const sourceId = req.params.id;
     const { newName, newDate, targetZoneId } = req.body;
@@ -342,7 +342,7 @@ router.post('/:id/duplicate', requireAuth, async (req, res) => {
 });
 
 // POST /programs/:id/import-songs — Import/append songs from another program into this program
-router.post('/:id/import-songs', requireAuth, async (req, res) => {
+router.post('/:id/import-songs', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const targetId = req.params.id;
     const { sourceProgramId, songIds: specificSongIds } = req.body;
@@ -410,7 +410,7 @@ router.post('/:id/import-songs', requireAuth, async (req, res) => {
 });
 
 // POST /programs/:id/copy-songs — Append specific song IDs to target program
-router.post('/:id/copy-songs', requireAuth, async (req, res) => {
+router.post('/:id/copy-songs', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const targetId = req.params.id;
     const { songIds } = req.body;
@@ -491,7 +491,7 @@ async function findProgramRow(programId: string) {
 }
 
 // PATCH /programs/:id — Update program metadata
-router.patch('/:id', requireAuth, async (req, res) => {
+router.patch('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const programId = req.params.id;
     const body = req.body || {};
@@ -554,7 +554,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE /programs/:id — Delete program
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const programId = req.params.id;
     const found = await findProgramRow(programId);
@@ -580,7 +580,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 });
 
 // PATCH /programs/:id/category-order — Update category order within program
-router.patch('/:id/category-order', requireAuth, async (req, res) => {
+router.patch('/:id/category-order', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const programId = req.params.id;
     const { categoryOrder } = req.body;

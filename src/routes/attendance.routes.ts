@@ -3,7 +3,7 @@ import { eq, desc, and, sql } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
 import { attendance, profiles, settings } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
@@ -259,7 +259,7 @@ router.post('/check-out', requireAuth, async (req: any, res) => {
 });
 
 /** POST /attendance/manual — Admin adds manual entry */
-router.post('/manual', requireAuth, async (req: any, res) => {
+router.post('/manual', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
@@ -314,7 +314,7 @@ router.post('/manual', requireAuth, async (req: any, res) => {
 });
 
 /** PATCH /attendance/:id — Admin update attendance record */
-router.patch('/:id', requireAuth, async (req: any, res) => {
+router.patch('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
     const { eventName, event_name, status, userName, user_name, checkInTime, check_in_time, checkOutTime, check_out_time, isArchived, is_archived } = req.body;
@@ -366,7 +366,7 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
 });
 
 /** DELETE /attendance/:id — Admin delete record */
-router.delete('/:id', requireAuth, async (req: any, res) => {
+router.delete('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
     await db.delete(attendance).where(eq(attendance.id, id));

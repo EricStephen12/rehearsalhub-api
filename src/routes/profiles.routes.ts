@@ -316,7 +316,7 @@ router.patch('/:userId', requireAuth, async (req, res) => {
   if (body.gender !== undefined) raw.gender = body.gender;
   if (body.birthday !== undefined) raw.birthday = body.birthday;
   if (body.region !== undefined) raw.region = body.region;
-  if (zoneCode !== undefined) {
+  if (isHqAdmin && zoneCode !== undefined) {
     raw.zone_code = zoneCode;
     raw.zoneCode = zoneCode;
     raw.zoneId = zoneCode;
@@ -360,7 +360,7 @@ router.patch('/:userId', requireAuth, async (req, res) => {
   if (body.is_banned !== undefined) raw.is_banned = Boolean(body.is_banned);
   if (body.is_suspended !== undefined) raw.is_suspended = Boolean(body.is_suspended);
   if (body.is_active !== undefined) raw.is_active = Boolean(body.is_active);
-  if (body.zone_code !== undefined) {
+  if (isHqAdmin && body.zone_code !== undefined) {
     raw.zone_code = body.zone_code;
     raw.zoneId = body.zone_code;
   }

@@ -3,7 +3,7 @@ import { eq, or, sql } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
 import { submittedSongs, profiles, notifications } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
 
@@ -357,7 +357,7 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
 });
 
 /** POST /submitted-songs/:id/approve */
-router.post('/:id/approve', requireAuth, async (req: any, res) => {
+router.post('/:id/approve', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
     const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
@@ -392,7 +392,7 @@ router.post('/:id/approve', requireAuth, async (req: any, res) => {
 });
 
 /** POST /submitted-songs/:id/reject */
-router.post('/:id/reject', requireAuth, async (req: any, res) => {
+router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
     const { notes, reason } = req.body;
@@ -435,7 +435,7 @@ router.post('/:id/reject', requireAuth, async (req: any, res) => {
 });
 
 /** DELETE /submitted-songs/:id */
-router.delete('/:id', requireAuth, async (req: any, res) => {
+router.delete('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
     await db.delete(submittedSongs).where(eq(submittedSongs.id, id));

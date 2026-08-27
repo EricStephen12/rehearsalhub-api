@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, JsonWebTokenError, TokenExpiredError } from './token';
 import { revocationStore } from './revocation';
 import { resolveTenantScope, withTenantTransaction } from '../middleware/tenant.middleware';
+import { canManageTenant } from './permissions';
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
@@ -43,4 +44,12 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     }
     next(err);
   }
+}
+
+export function requireTenantAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (!canManageTenant(res.locals.auth?.role)) {
+    res.status(403).json({ success: false, error: 'Forbidden' });
+    return;
+  }
+  next();
 }

@@ -44,6 +44,17 @@ router.post('/initialize', requireAuth, async (req, res) => {
 });
 
 /**
+ * POST /verify
+ * Provider verification must be implemented before subscriptions are activated.
+ */
+router.post('/verify', requireAuth, async (_req, res) => {
+  res.status(501).json({
+    success: false,
+    error: 'KingsPay payment verification is not implemented on this server.',
+  });
+});
+
+/**
  * POST /webhook
  * Called by KingsPay servers when a payment is successful.
  * This endpoint should NOT have `requireAuth` since it's called by an external server.

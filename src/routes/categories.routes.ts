@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { categories, zoneCategories, pageCategories, zonePageCategories } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
@@ -99,7 +99,7 @@ router.get('/zone-page', requireAuth, async (req: any, res) => {
 });
 
 // POST /categories — Create a song category
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { name, color, description, zoneId } = req.body;
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -134,7 +134,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PATCH /categories/:id — Update a song category
-router.patch('/:id', requireAuth, async (req, res) => {
+router.patch('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const categoryId = req.params.id;
     const body = req.body || {};
@@ -173,7 +173,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE /categories/:id — Delete a song category
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const categoryId = req.params.id;
     await db.delete(categories).where(sql`${categories.id} = ${categoryId}`);
@@ -186,7 +186,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 });
 
 // POST /categories/page — Create a page/program category
-router.post('/page', requireAuth, async (req, res) => {
+router.post('/page', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const pageCatId = body.id || `pc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -220,7 +220,7 @@ router.post('/page', requireAuth, async (req, res) => {
 });
 
 // PATCH /categories/page/:id — Update a page/program category
-router.patch('/page/:id', requireAuth, async (req, res) => {
+router.patch('/page/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const pageCatId = req.params.id;
     const body = req.body || {};
@@ -255,7 +255,7 @@ router.patch('/page/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE /categories/page/:id — Delete a page/program category
-router.delete('/page/:id', requireAuth, async (req, res) => {
+router.delete('/page/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const pageCatId = req.params.id;
     await Promise.all([
@@ -271,7 +271,7 @@ router.delete('/page/:id', requireAuth, async (req, res) => {
 });
 
 // POST /categories/page/order — Reorder page categories
-router.post('/page/order', requireAuth, async (req, res) => {
+router.post('/page/order', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const rawOrder = Array.isArray(req.body) ? req.body : req.body?.order;
     if (!Array.isArray(rawOrder)) {

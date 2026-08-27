@@ -6,8 +6,20 @@ import { supportTickets, supportMessages, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
+import { canManageTenant, isHQRole } from '../auth/permissions';
 
 const router = Router();
+
+function isSupportAdmin(role: unknown): boolean {
+  return canManageTenant(role);
+}
+
+async function getAccessibleTicket(ticketId: string, userId: string, role: unknown) {
+  const [ticket] = await db.select().from(supportTickets).where(eq(supportTickets.id, ticketId)).limit(1);
+  if (!ticket) return { ticket: null, forbidden: false };
+  if (isSupportAdmin(role) || ticket.userId === userId) return { ticket, forbidden: false };
+  return { ticket: null, forbidden: true };
+}
 
 // Ensure support tables exist in PostgreSQL database
 async function ensureTables() {
@@ -85,7 +97,7 @@ function shapeTicket(row: typeof supportTickets.$inferSelect) {
 router.get('/', requireAuth, async (req, res) => {
   try {
     const auth = res.locals.auth;
-    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const isHqAdmin = isHQRole(auth.role);
 
     const { zoneId } = req.query;
     const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : null;
@@ -117,7 +129,15 @@ router.get('/', requireAuth, async (req, res) => {
 /** GET /support/:ticketId — Get single ticket */
 router.get('/:ticketId', requireAuth, async (req, res) => {
   try {
-    const [ticket] = await db.select().from(supportTickets).where(eq(supportTickets.id, req.params.ticketId)).limit(1);
+    const { ticket, forbidden } = await getAccessibleTicket(
+      req.params.ticketId,
+      res.locals.auth.userId,
+      res.locals.auth.role,
+    );
+    if (forbidden) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     if (!ticket) {
       res.status(404).json({ success: false, error: 'Support ticket not found' });
       return;
@@ -132,6 +152,19 @@ router.get('/:ticketId', requireAuth, async (req, res) => {
 router.get('/:ticketId/messages', requireAuth, async (req, res) => {
   try {
     const { ticketId } = req.params;
+    const { ticket, forbidden } = await getAccessibleTicket(
+      ticketId,
+      res.locals.auth.userId,
+      res.locals.auth.role,
+    );
+    if (forbidden) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+    if (!ticket) {
+      res.status(404).json({ success: false, error: 'Support ticket not found' });
+      return;
+    }
     const messageRows = await db
       .select()
       .from(supportMessages)
@@ -236,6 +269,15 @@ router.post('/:ticketId/messages', requireAuth, async (req: any, res) => {
   try {
     const { ticketId } = req.params;
     const auth = res.locals.auth;
+    const { ticket, forbidden } = await getAccessibleTicket(ticketId, auth.userId, auth.role);
+    if (forbidden) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+    if (!ticket) {
+      res.status(404).json({ success: false, error: 'Support ticket not found' });
+      return;
+    }
     const text = req.body.text?.trim() || req.body.message?.trim() || req.body.content?.trim();
 
     if (!text) {
@@ -245,7 +287,7 @@ router.post('/:ticketId/messages', requireAuth, async (req: any, res) => {
 
     const messageId = crypto.randomUUID();
     const now = new Date();
-    const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
+    const isAdmin = canManageTenant(auth.role);
     const senderType = isAdmin ? 'admin' : 'user';
     const senderName = req.body.senderName || (isAdmin ? 'HQ Support Admin' : 'Member');
 
@@ -292,11 +334,18 @@ router.post('/:ticketId/messages', requireAuth, async (req: any, res) => {
 router.patch('/:ticketId/status', requireAuth, async (req, res) => {
   try {
     const { ticketId } = req.params;
+    const auth = res.locals.auth;
     const { status } = req.body;
     const validStatuses = ['open', 'in_progress', 'resolved', 'closed'];
 
     if (!validStatuses.includes(status)) {
       res.status(400).json({ success: false, error: 'Invalid status' });
+      return;
+    }
+
+    const { ticket, forbidden } = await getAccessibleTicket(ticketId, auth.userId, auth.role);
+    if (forbidden || !ticket || !isSupportAdmin(auth.role)) {
+      res.status(forbidden ? 403 : 404).json({ success: false, error: forbidden ? 'Forbidden' : 'Support ticket not found' });
       return;
     }
 

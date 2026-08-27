@@ -4,14 +4,31 @@ import { db } from '../db';
 import { individualSubscriptions, profiles } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
+import { canManageAllTenants } from '../auth/permissions';
 
 const router = Router();
+
+/** GET /subscriptions/me — Fetch the current user's subscription */
+router.get('/me', requireAuth, async (_req, res) => {
+  try {
+    const userId = res.locals.auth.userId as string;
+    const [sub] = await db
+      .select()
+      .from(individualSubscriptions)
+      .where(eq(individualSubscriptions.userId, userId))
+      .limit(1);
+    res.json({ success: true, data: sub ?? null });
+  } catch (err) {
+    console.error('[subscriptions:me]', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch subscription' });
+  }
+});
 
 /** GET /subscriptions — Admin list all subscriptions */
 router.get('/', requireAuth, async (_req, res) => {
   try {
     const auth = res.locals.auth;
-    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
+    const isHqAdmin = canManageAllTenants(auth.role);
     if (!isHqAdmin) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
@@ -104,7 +121,7 @@ router.post('/:userId/extend', requireAuth, async (req, res) => {
     const { userId } = req.params;
     const { months = 1 } = req.body;
     const auth = res.locals.auth;
-    if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
+    if (!canManageAllTenants(auth.role)) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }

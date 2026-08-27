@@ -24,6 +24,19 @@ router.get('/:zoneId', requireAuth, async (req, res) => {
 
 // GET /zones/:zoneId/members
 router.get('/:zoneId/members', requireAuth, async (req, res) => {
+  const auth = res.locals.auth;
+  const role = String(auth?.role || '').toLowerCase();
+  const isHqAdmin = role === 'hq_admin' || role === 'admin' || role === 'super_admin';
+  const requestedZoneId = String(req.params.zoneId || '').trim().toLowerCase();
+  const authZoneId = String(auth?.zoneId || '').trim().toLowerCase();
+  const normalizedRequestedZoneId = requestedZoneId.replace(/-/g, '');
+  const normalizedAuthZoneId = authZoneId.replace(/-/g, '');
+
+  if (!isHqAdmin && (!authZoneId || normalizedRequestedZoneId !== normalizedAuthZoneId)) {
+    res.status(403).json({ success: false, error: 'Forbidden' });
+    return;
+  }
+
   const members = await db.select().from(zoneMembers).where(eq(zoneMembers.zoneId, req.params.zoneId));
   res.json({ success: true, data: members });
 });

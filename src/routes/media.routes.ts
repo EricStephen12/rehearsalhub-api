@@ -6,6 +6,7 @@ import { mediaVideos, mediaAssets, zoneMediaAssets, mediaCategories } from '../s
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
+import { canManageTenant, isHQRole } from '../auth/permissions';
 
 const router = Router();
 
@@ -108,7 +109,7 @@ async function loadAllMediaAssets(): Promise<any[]> {
 }
 
 // GET /media/stats - Summary counts across all 7,700+ media assets
-router.get('/stats', async (_req, res) => {
+router.get('/stats', requireAuth, async (_req, res) => {
   try {
     const all = await loadAllMediaAssets();
     const videoCount = all.filter((m) => m.type === 'video').length;
@@ -134,12 +135,22 @@ router.get('/stats', async (_req, res) => {
 });
 
 // GET /media - List media with filtering, search, and scalable pagination
-router.get('/', async (req, res) => {
+router.get('/', requireAuth, async (req: any, res) => {
   try {
-    const { zoneId, type, search, featured, isHqOnly, limit, page = '1' } = req.query;
+    const { zoneId: requestedZoneId, type, search, featured, isHqOnly, limit, page = '1' } = req.query;
     const allAssets = await loadAllMediaAssets();
+    const tenant = req.tenant;
+    const zoneId = tenant.isHQAdmin ? requestedZoneId : tenant.effectiveZoneId;
 
     let data = allAssets;
+
+    if (!tenant.isHQAdmin) {
+      data = data.filter((item) => {
+        if (item.forHq || item.isHqOnly) return false;
+        if (!item.zoneId || item.zoneId === 'global') return true;
+        return item.zoneId === zoneId;
+      });
+    }
 
     if (type && type !== 'all') {
       data = data.filter((item) => item.type === type);
@@ -211,7 +222,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /media/categories - List media categories
-router.get('/categories', async (_req, res) => {
+router.get('/categories', requireAuth, async (_req, res) => {
   try {
     const rows = await db.select().from(mediaCategories);
     const data = rows.map((r) => {
@@ -232,26 +243,36 @@ router.get('/categories', async (_req, res) => {
 });
 
 // GET /media/:id - Single media item
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAuth, async (req: any, res) => {
   try {
     const { id } = req.params;
+    const tenant = req.tenant;
+
+    const canView = (item: any): boolean => {
+      if (tenant.isHQAdmin) return true;
+      if (item.forHq || item.isHqOnly) return false;
+      return !item.zoneId || item.zoneId === 'global' || item.zoneId === tenant.effectiveZoneId;
+    };
 
     // Check media_videos first
     const [videoRow] = await db.select().from(mediaVideos).where(eq(mediaVideos.id, id)).limit(1);
     if (videoRow) {
-      return res.json({ success: true, data: normalizeAsset(videoRow, 'media_videos') });
+      const item = normalizeAsset(videoRow, 'media_videos');
+      return canView(item) ? res.json({ success: true, data: item }) : res.status(404).json({ success: false, error: 'Media not found' });
     }
 
     // Check media_assets
     const [assetRow] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).limit(1);
     if (assetRow) {
-      return res.json({ success: true, data: normalizeAsset(assetRow, 'media_assets') });
+      const item = normalizeAsset(assetRow, 'media_assets');
+      return canView(item) ? res.json({ success: true, data: item }) : res.status(404).json({ success: false, error: 'Media not found' });
     }
 
     // Check zone_media_assets
     const [zoneRow] = await db.select().from(zoneMediaAssets).where(eq(zoneMediaAssets.id, id)).limit(1);
     if (zoneRow) {
-      return res.json({ success: true, data: normalizeAsset(zoneRow, 'zone_media_assets') });
+      const item = normalizeAsset(zoneRow, 'zone_media_assets');
+      return canView(item) ? res.json({ success: true, data: item }) : res.status(404).json({ success: false, error: 'Media not found' });
     }
 
     res.status(404).json({ success: false, error: 'Media not found' });
@@ -265,6 +286,12 @@ router.get('/:id', async (req, res) => {
 router.post('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
+    const role = String(auth?.role || '').toLowerCase();
+    const canManageMedia = canManageTenant(role);
+    if (!canManageMedia) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const {
       title,
       url,
@@ -283,6 +310,13 @@ router.post('/', requireAuth, async (req: any, res) => {
       return res.status(400).json({ success: false, error: 'Title and URL are required' });
     }
 
+    const tenant = req.tenant;
+    const effectiveZoneId = tenant.isHQAdmin ? (zoneId || 'global') : tenant.effectiveZoneId;
+    if (!tenant.isHQAdmin && zoneId && zoneId !== tenant.effectiveZoneId) {
+      res.status(403).json({ success: false, error: 'Forbidden: Media is outside your tenant scope' });
+      return;
+    }
+
     const id = `media_${crypto.randomUUID()}`;
     const isYt = Boolean(isYoutube || finalUrl.includes('youtube.com') || finalUrl.includes('youtu.be'));
     const now = new Date().toISOString();
@@ -296,7 +330,7 @@ router.post('/', requireAuth, async (req: any, res) => {
       type: type || 'video',
       thumbnail: thumbnail || null,
       description: description || '',
-      zoneId: zoneId || 'global',
+      zoneId: effectiveZoneId || 'global',
       forHq: Boolean(forHq),
       isYouTube: isYt,
       featured: Boolean(featured),
@@ -344,6 +378,13 @@ router.post('/', requireAuth, async (req: any, res) => {
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const auth = res.locals.auth;
+    const role = String(auth?.role || '').toLowerCase();
+    const canManageMedia = canManageTenant(role);
+    if (!canManageMedia) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const [existing] = await db.select().from(mediaVideos).where(eq(mediaVideos.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Media item not found in media_videos' });
@@ -351,6 +392,14 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
     const m = mergeRawRow(existing);
     const updates = req.body;
+    const tenant = (req as any).tenant;
+    const existingZoneId = m.zoneId || m.zone_id || 'global';
+    if (!tenant.isHQAdmin && existingZoneId !== tenant.effectiveZoneId && existingZoneId !== 'global') {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+    if (!tenant.isHQAdmin && updates.zoneId && updates.zoneId !== tenant.effectiveZoneId) {
+      return res.status(403).json({ success: false, error: 'Forbidden: Media is outside your tenant scope' });
+    }
     const now = new Date().toISOString();
 
     const updatedRaw = {
@@ -391,7 +440,27 @@ router.patch('/:id', requireAuth, async (req, res) => {
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    
+    const auth = res.locals.auth;
+    const role = String(auth?.role || '').toLowerCase();
+    const canManageMedia = canManageTenant(role);
+    if (!canManageMedia) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    const existing = (await loadAllMediaAssets()).find((item) => item.id === id);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Media not found' });
+      return;
+    }
+    const tenant = (req as any).tenant;
+    if (!isHQRole(role)) {
+      if (existing.forHq || existing.isHqOnly || (existing.zoneId && existing.zoneId !== tenant.effectiveZoneId)) {
+        res.status(403).json({ success: false, error: 'Forbidden' });
+        return;
+      }
+    }
+
     // Delete across tables
     await Promise.all([
       db.delete(mediaVideos).where(eq(mediaVideos.id, id)),

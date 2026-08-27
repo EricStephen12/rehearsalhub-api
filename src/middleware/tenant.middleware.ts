@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
+import { sql } from 'drizzle-orm';
+import { baseDb, dbStorage } from '../db';
 
 /**
  * Resolved tenant scope attached to every authenticated request.
@@ -36,7 +38,8 @@ declare global {
 }
 
 /** The canonical list of role strings that get full HQ Admin access. */
-const HQ_ROLES = new Set(['hq_admin', 'admin', 'super_admin']);
+const HQ_ROLES = new Set(['super_admin', 'admin', 'hq_admin']);
+
 
 /**
  * TENANCY MIDDLEWARE — runs after requireAuth on every protected route.
@@ -126,9 +129,6 @@ export function resolveTenantScope(req: Request, auth: any): TenantScope {
   };
 }
 
-import { sql } from 'drizzle-orm';
-import { baseDb, dbStorage } from '../db';
-
 export function withTenantTransaction(
   req: Request,
   res: Response,
@@ -137,7 +137,7 @@ export function withTenantTransaction(
 ): void {
   // If non-HQ role has no effectiveZoneId on a restricted route, reject immediately with 403
   if (!tenant.isHQAdmin && !tenant.effectiveZoneId) {
-    res.status(403).json({ success: false, error: 'Forbidden: Missing tenant zone scope' });
+// const HQ_ROLES = new Set(['hq_admin', 'admin', 'super_admin']);
     return;
   }
 
@@ -164,7 +164,7 @@ export function withTenantTransaction(
           reject(err);
         }
       });
-    });
+      });
   }).catch((txErr) => {
     if (!res.headersSent) {
       console.error('[withTenantTransaction Error]:', txErr);

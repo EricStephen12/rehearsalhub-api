@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 import { db } from '../db';
 import { schedulePrograms } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
@@ -95,7 +95,7 @@ router.get('/:scheduleId', requireAuth, async (req, res) => {
 });
 
 /** POST /schedule — Create a new schedule program */
-router.post('/', requireAuth, async (req: any, res) => {
+router.post('/', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const id = crypto.randomUUID();
     const now = new Date();
@@ -142,7 +142,7 @@ router.post('/', requireAuth, async (req: any, res) => {
 });
 
 /** PATCH /schedule/:scheduleId — Update program contents */
-router.patch('/:scheduleId', requireAuth, async (req: any, res) => {
+router.patch('/:scheduleId', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { scheduleId } = req.params;
     const [existing] = await db.select().from(schedulePrograms).where(eq(schedulePrograms.id, scheduleId)).limit(1);
@@ -174,7 +174,7 @@ router.patch('/:scheduleId', requireAuth, async (req: any, res) => {
 });
 
 /** DELETE /schedule/:scheduleId */
-router.delete('/:scheduleId', requireAuth, async (req, res) => {
+router.delete('/:scheduleId', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { scheduleId } = req.params;
     await db.delete(schedulePrograms).where(eq(schedulePrograms.id, scheduleId));

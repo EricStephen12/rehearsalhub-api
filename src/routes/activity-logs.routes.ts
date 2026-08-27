@@ -92,7 +92,7 @@ router.post('/', requireAuth, async (req: any, res) => {
       category: req.body.category || 'general',
       userId: auth.userId,
       userName: req.body.userName || auth.email,
-      zoneId: req.body.zoneId || auth.zoneId || null,
+      zoneId: req.tenant.isHQAdmin ? (req.body.zoneId || null) : (req.tenant.effectiveZoneId || auth.zoneId || null),
       details: req.body.details || req.body.description || '',
       ip: req.ip || null,
       timestamp: now,

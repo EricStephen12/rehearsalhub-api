@@ -14,7 +14,7 @@ import {
   userSongNotes,
   mediaDoodles,
 } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
 
@@ -535,8 +535,8 @@ const createSongHandler = async (req: any, res: any) => {
   }
 };
 
-router.post('/', requireAuth, createSongHandler);
-router.post('/praise-night', requireAuth, createSongHandler);
+router.post('/', requireAuth, requireTenantAdmin, createSongHandler);
+router.post('/praise-night', requireAuth, requireTenantAdmin, createSongHandler);
 
 // Helper for song update
 const updateSongHandler = async (req: any, res: any) => {
@@ -599,8 +599,8 @@ const updateSongHandler = async (req: any, res: any) => {
   }
 };
 
-router.patch('/:id', requireAuth, updateSongHandler);
-router.patch('/praise-night/:id', requireAuth, updateSongHandler);
+router.patch('/:id', requireAuth, requireTenantAdmin, updateSongHandler);
+router.patch('/praise-night/:id', requireAuth, requireTenantAdmin, updateSongHandler);
 
 // Toggle song status (heard / unheard)
 const toggleStatusHandler = async (req: any, res: any) => {
@@ -628,8 +628,8 @@ const toggleStatusHandler = async (req: any, res: any) => {
   }
 };
 
-router.patch('/:id/status', requireAuth, toggleStatusHandler);
-router.patch('/praise-night/:id/status', requireAuth, toggleStatusHandler);
+router.patch('/:id/status', requireAuth, requireTenantAdmin, toggleStatusHandler);
+router.patch('/praise-night/:id/status', requireAuth, requireTenantAdmin, toggleStatusHandler);
 
 // Toggle song active status
 const toggleActiveHandler = async (req: any, res: any) => {
@@ -658,8 +658,8 @@ const toggleActiveHandler = async (req: any, res: any) => {
   }
 };
 
-router.patch('/:id/active', requireAuth, toggleActiveHandler);
-router.patch('/praise-night/:id/active', requireAuth, toggleActiveHandler);
+router.patch('/:id/active', requireAuth, requireTenantAdmin, toggleActiveHandler);
+router.patch('/praise-night/:id/active', requireAuth, requireTenantAdmin, toggleActiveHandler);
 
 // Delete song
 const deleteSongHandler = async (req: any, res: any) => {
@@ -682,11 +682,11 @@ const deleteSongHandler = async (req: any, res: any) => {
   }
 };
 
-router.delete('/:id', requireAuth, deleteSongHandler);
-router.delete('/praise-night/:id', requireAuth, deleteSongHandler);
+router.delete('/:id', requireAuth, requireTenantAdmin, deleteSongHandler);
+router.delete('/praise-night/:id', requireAuth, requireTenantAdmin, deleteSongHandler);
 
 // Master / Ministered Songs Write routes
-router.post('/master', requireAuth, async (req, res) => {
+router.post('/master', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const songId = body.id || `ms_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -725,7 +725,7 @@ router.post('/master', requireAuth, async (req, res) => {
   }
 });
 
-router.patch('/master/:id', requireAuth, async (req, res) => {
+router.patch('/master/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const songId = req.params.id;
     const body = req.body || {};
@@ -768,7 +768,7 @@ router.patch('/master/:id', requireAuth, async (req, res) => {
   }
 });
 
-router.delete('/master/:id', requireAuth, async (req, res) => {
+router.delete('/master/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const songId = req.params.id;
     await db.delete(ministeredSongs).where(eq(ministeredSongs.id, songId));
@@ -780,7 +780,7 @@ router.delete('/master/:id', requireAuth, async (req, res) => {
 });
 
 // POST /songs/praise-night/:id/duplicate — Duplicate a song within or across programs
-router.post('/praise-night/:id/duplicate', requireAuth, async (req, res) => {
+router.post('/praise-night/:id/duplicate', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const songId = req.params.id;
     const { targetProgramId, targetPraiseNightId, zoneId } = req.body || {};
@@ -986,7 +986,7 @@ router.get('/:id', requireAuth, async (req: any, res: any) => {
 });
 
 // POST /songs/import-from-ministered — Import songs from ministered songs into repertoire
-router.post('/import-from-ministered', requireAuth, async (req: any, res: any) => {
+router.post('/import-from-ministered', requireAuth, requireTenantAdmin, async (req: any, res: any) => {
   try {
     const auth = res.locals.auth;
     const { songIds, praiseNightId } = req.body;

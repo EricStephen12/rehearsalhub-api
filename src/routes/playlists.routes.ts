@@ -39,7 +39,10 @@ router.post('/', requireAuth, async (req, res) => {
     const userId = res.locals.auth.userId as string;
     const { name, title, songIds = [], isPublic = false, description } = req.body;
     const playlistTitle = (title || name || 'New Playlist').trim();
-    const playlistId = `pl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const requestedId = typeof req.body.id === 'string' ? req.body.id : '';
+    const playlistId = requestedId.startsWith(`${userId}_`)
+      ? requestedId
+      : `pl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     const newSongIds = Array.isArray(songIds) ? songIds : [];
 
@@ -81,12 +84,16 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 /** GET /playlists/:id - Fetch playlist details and its resolved songs (Supports Shared Playlists) */
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const [row] = await db.select().from(userPlaylists).where(eq(userPlaylists.id, id)).limit(1);
     if (!row) {
       res.status(404).json({ success: false, error: 'Playlist not found' });
+      return;
+    }
+    if (row.userId !== (res.locals.auth.userId as string) && !row.isPublic) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
 
@@ -161,6 +168,10 @@ router.post('/:id/songs', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Playlist not found' });
       return;
     }
+    if (existing.userId !== (res.locals.auth.userId as string)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
 
     const merged = mergeRawRow(existing);
     const currentList = asStringArray(merged.songIds ?? merged.songs ?? existing.songIds);
@@ -196,6 +207,10 @@ router.delete('/:id/songs/:songId', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Playlist not found' });
       return;
     }
+    if (existing.userId !== (res.locals.auth.userId as string)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
 
     const merged = mergeRawRow(existing);
     const currentList = asStringArray(merged.songIds ?? merged.songs ?? existing.songIds);
@@ -221,11 +236,62 @@ router.delete('/:id/songs/:songId', requireAuth, async (req, res) => {
   }
 });
 
+/** PATCH /playlists/:id - Update playlist details owned by the current user */
+router.patch('/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = res.locals.auth.userId as string;
+    const [existing] = await db.select().from(userPlaylists)
+      .where(eq(userPlaylists.id, id)).limit(1);
+    if (!existing) {
+      res.status(404).json({ success: false, error: 'Playlist not found' });
+      return;
+    }
+    if (existing.userId !== userId) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
+
+    const body = req.body || {};
+    const raw = (existing.rawData && typeof existing.rawData === 'object') ? { ...(existing.rawData as any) } : {};
+    const title = body.title ?? body.name;
+    if (title !== undefined) raw.title = title;
+    if (body.description !== undefined) raw.description = body.description;
+    raw.updatedAt = new Date().toISOString();
+
+    const [updated] = await db.update(userPlaylists).set({
+      ...(title !== undefined ? { title: String(title).trim() } : {}),
+      ...(body.isPublic !== undefined ? { isPublic: Boolean(body.isPublic) } : {}),
+      rawData: raw,
+    }).where(eq(userPlaylists.id, id)).returning();
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error('[playlists/:id:PATCH]', err);
+    res.status(500).json({ success: false, error: 'Failed to update playlist' });
+  }
+});
+
 /** DELETE /playlists/:id - Delete playlist */
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = res.locals.auth.userId as string;
+    const [ownedPlaylist] = await db.select({ id: userPlaylists.id })
+      .from(userPlaylists)
+      .where(eq(userPlaylists.id, id))
+      .limit(1);
+    if (!ownedPlaylist) {
+      res.status(404).json({ success: false, error: 'Playlist not found' });
+      return;
+    }
+    const [owner] = await db.select({ userId: userPlaylists.userId })
+      .from(userPlaylists)
+      .where(eq(userPlaylists.id, id))
+      .limit(1);
+    if (owner?.userId !== userId) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     await db.delete(userPlaylists).where(eq(userPlaylists.id, id));
     res.json({ success: true, message: 'Playlist deleted' });
   } catch (err) {

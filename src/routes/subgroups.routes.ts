@@ -6,7 +6,7 @@ import {
   subgroups, subgroupMembers, subgroupSongs, subgroupPraiseNights,
   notifications, profiles, ministeredSongs,
 } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
@@ -321,7 +321,7 @@ const handleCreateSubgroup = async (req: any, res: any) => {
 router.post('/', requireAuth, handleCreateSubgroup);
 router.post('/requests', requireAuth, handleCreateSubgroup);
 
-router.post('/:id/approve', requireAuth, async (req, res) => {
+router.post('/:id/approve', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
@@ -362,7 +362,7 @@ router.post('/:id/approve', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:id/reject', requireAuth, async (req, res) => {
+router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body || {};
@@ -408,7 +408,7 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
 // ── Subgroup CRUD ─────────────────────────────────────────────────────────────
 
 /** PATCH /subgroups/:id — update name, description, or status */
-router.patch('/:id', requireAuth, async (req, res) => {
+router.patch('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const { id } = req.params;
@@ -438,7 +438,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 });
 
 /** DELETE /subgroups/:id — coordinator or admin only */
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const { id } = req.params;
@@ -502,7 +502,7 @@ router.get('/:id/members', requireAuth, async (req, res) => {
 });
 
 /** POST /subgroups/members — add a member to a subgroup + send notification */
-router.post('/members', requireAuth, async (req, res) => {
+router.post('/members', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const schema = z.object({
@@ -631,7 +631,7 @@ router.delete('/members', requireAuth, async (req, res) => {
 // ── Praise Nights / Setlists ──────────────────────────────────────────────────
 
 /** POST /subgroups/praise-nights — create a new rehearsal setlist */
-router.post('/praise-nights', requireAuth, async (req, res) => {
+router.post('/praise-nights', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { name, date, location, category = 'ongoing', subGroupId } = req.body || {};
     if (!subGroupId || !name?.trim()) {
@@ -657,7 +657,7 @@ router.post('/praise-nights', requireAuth, async (req, res) => {
 });
 
 /** PATCH /subgroups/praise-nights/:id — update a setlist */
-router.patch('/praise-nights/:id', requireAuth, async (req, res) => {
+router.patch('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const [row] = await db.select().from(subgroupPraiseNights).where(eq(subgroupPraiseNights.id, id)).limit(1);
@@ -695,7 +695,7 @@ router.patch('/praise-nights/:id', requireAuth, async (req, res) => {
 });
 
 /** DELETE /subgroups/praise-nights/:id */
-router.delete('/praise-nights/:id', requireAuth, async (req, res) => {
+router.delete('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     await db.delete(subgroupPraiseNights).where(eq(subgroupPraiseNights.id, id));
@@ -709,7 +709,7 @@ router.delete('/praise-nights/:id', requireAuth, async (req, res) => {
 // ── Subgroup Songs ────────────────────────────────────────────────────────────
 
 /** POST /subgroups/songs/import — import song(s) from All Ministered / Master catalog into subgroup */
-router.post('/songs/import', requireAuth, async (req, res) => {
+router.post('/songs/import', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const { masterSongIds, masterSongId, subGroupId, zoneId, praiseNightId } = req.body || {};
@@ -792,7 +792,7 @@ router.post('/songs/import', requireAuth, async (req, res) => {
 });
 
 /** POST /subgroups/songs — add a song to a subgroup with full rich metadata */
-router.post('/songs', requireAuth, async (req, res) => {
+router.post('/songs', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const {
       title, key, tempo, writer, leadSinger, lyrics, solfa, notation, solfas,
@@ -842,7 +842,7 @@ router.post('/songs', requireAuth, async (req, res) => {
 });
 
 /** PATCH /subgroups/songs/:id — update all subgroup song fields including comments, status, history */
-router.patch('/songs/:id', requireAuth, async (req, res) => {
+router.patch('/songs/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const [row] = await db.select().from(subgroupSongs).where(eq(subgroupSongs.id, id)).limit(1);
@@ -899,7 +899,7 @@ router.patch('/songs/:id', requireAuth, async (req, res) => {
 });
 
 /** DELETE /subgroups/songs/:id — delete a subgroup song */
-router.delete('/songs/:id', requireAuth, async (req, res) => {
+router.delete('/songs/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     await db.delete(subgroupSongs).where(eq(subgroupSongs.id, id));

@@ -5,12 +5,13 @@ import { db } from '../db';
 import { settings } from '../schema';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
+import { canManageAllTenants } from '../auth/permissions';
 
 const router = Router();
 const idSchema = z.string().min(1).max(200);
 
 /** GET /settings/:id — geofence / app settings (raw_data table). */
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAuth, async (req, res) => {
   try {
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) {
@@ -45,6 +46,10 @@ router.get('/:id', async (req, res) => {
 /** PUT /settings/:id — Update or create app / geofence setting */
 router.put('/:id', requireAuth, async (req, res) => {
   try {
+    if (!canManageAllTenants(res.locals.auth?.role)) {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'Invalid id' });
@@ -88,6 +93,11 @@ router.put('/:id', requireAuth, async (req, res) => {
 /** PATCH /settings/:id — Partial update setting */
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
+    const role = String(res.locals.auth?.role || '').toLowerCase();
+    if (role !== 'admin' && role !== 'hq_admin' && role !== 'super_admin') {
+      res.status(403).json({ success: false, error: 'Forbidden' });
+      return;
+    }
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'Invalid id' });

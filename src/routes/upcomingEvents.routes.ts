@@ -10,8 +10,6 @@ export const upcomingEventsRouter = Router();
 // GET /upcoming-events — Fetch upcoming / calendar events
 upcomingEventsRouter.get('/', requireAuth, async (req: any, res: any) => {
   try {
-    const { zoneId } = req.query;
-
     const rows = await db
       .select()
       .from(upcomingEvents)
@@ -19,9 +17,8 @@ upcomingEventsRouter.get('/', requireAuth, async (req: any, res: any) => {
 
     let events = rows.map(mergeRawRow);
 
-    const auth = res.locals.auth;
-    const isHqAdmin = auth?.role === 'hq_admin' || auth?.role === 'admin';
-    const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth?.zoneId as string | null) : null);
+    const tenant = req.tenant;
+    const effectiveZoneId = tenant.effectiveZoneId;
 
     if (effectiveZoneId && effectiveZoneId !== 'all') {
       const target = String(effectiveZoneId).toLowerCase();
@@ -79,6 +76,13 @@ upcomingEventsRouter.post('/', requireAuth, async (req: any, res: any) => {
     const body = req.body || {};
     const id = body.id || `upcoming-${Date.now()}`;
     const now = new Date().toISOString();
+    const tenant = req.tenant;
+    const requestedZoneId = body.zoneId ? String(body.zoneId) : null;
+
+    if (!tenant.isHQAdmin && requestedZoneId && requestedZoneId !== tenant.effectiveZoneId) {
+      res.status(403).json({ success: false, error: 'Forbidden: Event is outside your tenant scope' });
+      return;
+    }
 
     const rawData = {
       ...body,
@@ -93,7 +97,7 @@ upcomingEventsRouter.post('/', requireAuth, async (req: any, res: any) => {
       title: body.title || 'Untitled Event',
       date: body.date || now.split('T')[0],
       type: body.type || 'event',
-      zoneId: body.zoneId || null,
+      zoneId: tenant.isHQAdmin ? requestedZoneId : tenant.effectiveZoneId,
       location: body.location || null,
       description: body.description || null,
       rawData,
@@ -129,6 +133,18 @@ upcomingEventsRouter.patch('/:id', requireAuth, async (req: any, res: any) => {
       return;
     }
 
+    const tenant = req.tenant;
+    const existingZoneId = existing.zoneId || (existing.rawData as Record<string, any> | null)?.zoneId || null;
+    if (!tenant.isHQAdmin && existingZoneId !== tenant.effectiveZoneId) {
+      res.status(403).json({ success: false, error: 'Forbidden: Event is outside your tenant scope' });
+      return;
+    }
+
+    if (!tenant.isHQAdmin && req.body.zoneId && req.body.zoneId !== tenant.effectiveZoneId) {
+      res.status(403).json({ success: false, error: 'Forbidden: Event is outside your tenant scope' });
+      return;
+    }
+
     const mergedData = {
       ...(existing.rawData as Record<string, any> || {}),
       ...body,
@@ -143,7 +159,7 @@ upcomingEventsRouter.patch('/:id', requireAuth, async (req: any, res: any) => {
     if (body.title !== undefined) updateFields.title = body.title;
     if (body.date !== undefined) updateFields.date = body.date;
     if (body.type !== undefined) updateFields.type = body.type;
-    if (body.zoneId !== undefined) updateFields.zoneId = body.zoneId;
+    if (body.zoneId !== undefined && tenant.isHQAdmin) updateFields.zoneId = body.zoneId;
     if (body.location !== undefined) updateFields.location = body.location;
     if (body.description !== undefined) updateFields.description = body.description;
 
@@ -166,6 +182,19 @@ upcomingEventsRouter.patch('/:id', requireAuth, async (req: any, res: any) => {
 upcomingEventsRouter.delete('/:id', requireAuth, async (req: any, res: any) => {
   try {
     const { id } = req.params;
+    const tenant = req.tenant;
+    if (!tenant.isHQAdmin) {
+      const [existing] = await db
+        .select()
+        .from(upcomingEvents)
+        .where(eq(upcomingEvents.id, id))
+        .limit(1);
+      const existingZoneId = existing?.zoneId || (existing?.rawData as Record<string, any> | null)?.zoneId || null;
+      if (!existing || existingZoneId !== tenant.effectiveZoneId) {
+        res.status(403).json({ success: false, error: 'Forbidden: Event is outside your tenant scope' });
+        return;
+      }
+    }
     await db.delete(upcomingEvents).where(eq(upcomingEvents.id, id));
     res.json({ success: true, message: 'Event deleted successfully' });
   } catch (err) {

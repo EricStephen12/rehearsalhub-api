@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { zoneMembers, hqMembers, profiles, adminRequests, notifications } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 
 const router = Router();
 
@@ -297,7 +297,7 @@ router.get('/admin-requests', requireAuth, async (_req, res) => {
 });
 
 // POST /members/admin-requests/:id/approve — Approve request
-router.post('/admin-requests/:id/approve', requireAuth, async (req, res) => {
+router.post('/admin-requests/:id/approve', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
@@ -366,7 +366,7 @@ router.post('/admin-requests/:id/approve', requireAuth, async (req, res) => {
 });
 
 // POST /members/admin-requests/:id/reject — Reject request
-router.post('/admin-requests/:id/reject', requireAuth, async (req, res) => {
+router.post('/admin-requests/:id/reject', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     if (auth.role !== 'hq_admin' && auth.role !== 'admin') {

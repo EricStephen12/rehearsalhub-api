@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { notifications, userGroups, userNotifications, profiles } from '../schema';
-import { requireAuth } from '../auth/auth.middleware';
+import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
+import { broadcast } from '../ws/wsServer';
 
 const router = Router();
 
@@ -238,6 +239,7 @@ const createBroadcastHandler = async (req: any, res: any) => {
     };
 
     await db.insert(notifications).values(newRecord);
+    broadcast('notifications', 'all', { notificationId: id });
 
     res.status(201).json({
       success: true,
@@ -251,8 +253,8 @@ const createBroadcastHandler = async (req: any, res: any) => {
 };
 
 /** POST /notifications & POST /notifications/broadcast (CREATE) */
-router.post('/', requireAuth, createBroadcastHandler);
-router.post('/broadcast', requireAuth, createBroadcastHandler);
+router.post('/', requireAuth, requireTenantAdmin, createBroadcastHandler);
+router.post('/broadcast', requireAuth, requireTenantAdmin, createBroadcastHandler);
 
 /** PATCH /notifications/:id — update read state or update notification fields (UPDATE) */
 router.patch('/:id', requireAuth, async (req, res) => {
@@ -302,7 +304,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
     }
 
     // 2. Admin field update (title, message, category, priority, etc.)
-    if (title !== undefined || message !== undefined || body !== undefined || category !== undefined || priority !== undefined) {
+    if (title !== undefined || message !== undefined || body !== undefined || category !== undefined || priority !== undefined || targetAudience !== undefined || targetZoneId !== undefined) {
+      let allowed = false;
+      requireTenantAdmin(req, res, () => { allowed = true; });
+      if (!allowed) return;
+
       const [existingRow] = await db.select().from(notifications).where(eq(notifications.id, notifId)).limit(1);
       if (existingRow) {
         const oldRaw = (existingRow.rawData && typeof existingRow.rawData === 'object') ? existingRow.rawData : {};
@@ -341,7 +347,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 });
 
 /** PUT /notifications/:id (UPDATE) */
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const notifId = req.params.id;
     const { title, message, body, priority, category, targetAudience, targetZoneId } = req.body;
@@ -541,7 +547,7 @@ router.post('/mark-all-read', requireAuth, async (req, res) => {
 });
 
 /** POST /notifications/send — Expo push broadcast */
-router.post('/send', requireAuth, async (req, res) => {
+router.post('/send', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { recipientIds, title, body, data } = req.body;
     if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
