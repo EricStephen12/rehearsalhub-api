@@ -1,8 +1,8 @@
 import crypto from 'crypto';
-import { eq, or, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { db } from '../db';
-import { authCredentials, refreshTokens, profiles, zoneMembers, hqMembers, notifications } from '../schema';
+import { refreshTokens, profiles, zoneMembers, hqMembers } from '../schema';
 import { signAccessToken, generateRefreshToken } from './token';
 import { verifyPassword, hashPassword, validatePasswordStrength } from './password';
 import { revocationStore } from './revocation';
@@ -42,11 +42,6 @@ function asRaw(raw: unknown): Record<string, unknown> {
     : {};
 }
 
-/** Migrated emails are mixed-case — always compare case-insensitively. */
-function emailEquals(normalizedLower: string) {
-  return sql`lower(${profiles.email}) = ${normalizedLower}`;
-}
-
 /** Map profile.role / hasHqAccess → JWT role claim. */
 export function tokenRole(profile: {
   role: string | null;
@@ -69,6 +64,39 @@ function zoneIdFromProfile(profile: { rawData: unknown }): string | null {
     raw.zone_code ||
     null;
   return typeof z === 'string' ? z : null;
+}
+
+type InternalProfileRow = {
+  id: string;
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  role: string | null;
+  has_hq_access: boolean | null;
+  avatar_url: string | null;
+  kingschat_id: string | null;
+  profile_completed: boolean | null;
+  created_at: Date | null;
+  raw_data: unknown;
+  updated_at: string | null;
+  password_hash?: string | null;
+};
+
+function profileFromInternal(row: InternalProfileRow): typeof profiles.$inferSelect {
+  return {
+    id: row.id,
+    email: row.email,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    role: row.role,
+    hasHqAccess: row.has_hq_access,
+    avatarUrl: row.avatar_url,
+    createdAt: row.created_at,
+    rawData: row.raw_data,
+    kingschatId: row.kingschat_id,
+    profileCompleted: row.profile_completed,
+    updatedAt: row.updated_at,
+  };
 }
 
 export type AuthUser = {
@@ -134,89 +162,30 @@ export async function register(input: {
   }
 
   const email = input.email.toLowerCase().trim();
-  const [existing] = await db
-    .select({ id: profiles.id })
-    .from(profiles)
-    .where(emailEquals(email))
-    .limit(1);
-  if (existing) {
-    throw new AuthError('Email already registered', 409);
-  }
-
   const id = crypto.randomUUID();
   const passwordHash = await hashPassword(input.password);
-  const now = new Date();
   const cleanZoneCode = input.zoneCode.trim().toUpperCase();
   const isHQRequest = isHQZoneCode(cleanZoneCode);
 
-  const [profile] = await db
-    .insert(profiles)
-    .values({
-      id,
-      email,
-      firstName: input.firstName.trim(),
-      lastName: input.lastName.trim(),
-      role: 'user',
-      hasHqAccess: false,
-      kingschatId: input.kingschatId?.trim() || null,
-      profileCompleted: true,
-      createdAt: now,
-      updatedAt: now.toISOString(),
-      rawData: {
-        id,
-        email,
-        first_name: input.firstName.trim(),
-        last_name: input.lastName.trim(),
-        zone_code: cleanZoneCode,
-        designation: input.designation?.trim() || null,
-        kingschat_id: input.kingschatId?.trim() || null,
-        role: 'user',
-        profile_completed: true,
-        // HQ approval state
-        ...(isHQRequest ? {
-          pending_hq_approval: true,
-          is_active: false,
-          hq_request_at: now.toISOString(),
-        } : {
-          is_active: true,
-        }),
-      },
-    })
-    .returning();
-
-  await db.insert(authCredentials).values({
-    profileId: id,
-    passwordHash,
-    createdAt: now,
-    updatedAt: now,
-  });
+  let profile: typeof profiles.$inferSelect;
+  try {
+    const rows = await db.execute(sql`
+      SELECT * FROM auth_internal.register_user(
+        ${id}, ${email}, ${passwordHash}, ${input.firstName}, ${input.lastName},
+        ${cleanZoneCode}, ${input.designation?.trim() || null},
+        ${input.kingschatId?.trim() || null}, ${isHQRequest}
+      )
+    `) as unknown as InternalProfileRow[];
+    profile = profileFromInternal(rows[0]);
+  } catch (error: any) {
+    if (error?.code === '23505') {
+      throw new AuthError('Email already registered', 409);
+    }
+    throw error;
+  }
 
   // If HQ zone: notify HQ admins and return pending state
   if (isHQRequest) {
-    const fullName = `${input.firstName.trim()} ${input.lastName.trim()}`;
-    const notifId = crypto.randomUUID();
-    await db.insert(notifications).values({
-      id: notifId,
-      type: 'join_request',
-      title: `New HQ Join Request`,
-      message: `${fullName} (${email}) has requested to join an HQ group using zone code ${cleanZoneCode}. Please review and approve or reject their account.`,
-      category: 'join_request',
-      priority: 'high',
-      targetAudience: 'hq_admin',
-      senderId: id,
-      createdAt: now.toISOString(),
-      rawData: {
-        type: 'join_request',
-        applicantId: id,
-        applicantName: fullName,
-        applicantEmail: email,
-        zoneCode: cleanZoneCode,
-        designation: input.designation?.trim() || null,
-        requestedAt: now.toISOString(),
-        status: 'pending',
-      },
-    }).catch(() => {/* non-fatal */});
-
     return { pendingApproval: true, userId: id };
   }
 
@@ -237,51 +206,19 @@ export async function login(identifier: string, password: string): Promise<AuthT
   // 5: Email prefix (before @)
   // 6: Full Name
   // 7: First/Last Name
-  const candidateProfiles = await db
-    .select()
-    .from(profiles)
-    .where(
-      or(
-        sql`lower(${profiles.email}) = ${norm}`,
-        sql`lower(${profiles.rawData}->>'username') = ${norm}`,
-        sql`lower(${profiles.rawData}->>'alias') = ${norm}`,
-        sql`lower(${profiles.kingschatId}) = ${norm}`,
-        sql`lower(${profiles.rawData}->>'kingschat_id') = ${norm}`,
-        sql`lower(${profiles.rawData}->>'kingschatId') = ${norm}`,
-        sql`lower(split_part(${profiles.email}, '@', 1)) = ${norm}`,
-        sql`lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')}`,
-        sql`lower(coalesce(${profiles.firstName}, '')) = ${norm}`,
-        sql`lower(coalesce(${profiles.lastName}, '')) = ${norm}`
-      )
-    )
-    .orderBy(
-      sql`
-        CASE
-          WHEN lower(${profiles.email}) = ${norm} THEN 1
-          WHEN lower(${profiles.rawData}->>'username') = ${norm} THEN 2
-          WHEN lower(${profiles.rawData}->>'alias') = ${norm} THEN 3
-          WHEN lower(${profiles.kingschatId}) = ${norm} OR lower(${profiles.rawData}->>'kingschat_id') = ${norm} THEN 4
-          WHEN lower(split_part(${profiles.email}, '@', 1)) = ${norm} THEN 5
-          WHEN lower(replace(concat(coalesce(${profiles.firstName}, ''), coalesce(${profiles.lastName}, '')), ' ', '')) = ${norm.replace(/\s+/g, '')} THEN 6
-          ELSE 7
-        END ASC
-      `
-    )
-    .limit(10);
+  const candidateRows = await db.execute(sql`
+    SELECT * FROM auth_internal.login_candidates(${norm})
+  `) as unknown as InternalProfileRow[];
+  const candidateProfiles = candidateRows.map(profileFromInternal);
 
   if (!candidateProfiles || candidateProfiles.length === 0) {
     throw new AuthError('Invalid credentials');
   }
 
   // Check candidate profiles in priority order
-  for (const candidate of candidateProfiles) {
-    const [cred] = await db
-      .select()
-      .from(authCredentials)
-      .where(eq(authCredentials.profileId, candidate.id))
-      .limit(1);
-
-    if (cred && (await verifyPassword(password, cred.passwordHash))) {
+  for (const row of candidateRows) {
+    const candidate = profileFromInternal(row);
+    if (row.password_hash && (await verifyPassword(password, row.password_hash))) {
       // Block login for accounts pending HQ approval
       const raw = asRaw(candidate.rawData);
       if (raw.pending_hq_approval === true) {
@@ -409,37 +346,27 @@ export async function getMe(profileId: string): Promise<MeResult> {
   };
 }
 
-/** Upsert password for an existing profile (reset-password). Does not mutate profile fields. */
-export async function setPasswordForProfile(
-  profileId: string,
-  newPassword: string,
-): Promise<void> {
+export async function resetPasswordForEmail(email: string, newPassword: string): Promise<void> {
   if (!validatePasswordStrength(newPassword)) {
     throw new AuthError('Password must be at least 8 characters', 400);
   }
   const passwordHash = await hashPassword(newPassword);
-  const now = new Date();
-  const [existing] = await db
-    .select()
-    .from(authCredentials)
-    .where(eq(authCredentials.profileId, profileId))
-    .limit(1);
+  const rows = await db.execute(sql`
+    SELECT auth_internal.reset_password(${email.toLowerCase().trim()}, ${passwordHash}) AS profile_id
+  `) as unknown as Array<{ profile_id: string | null }>;
+  if (!rows[0]?.profile_id) throw new AuthError('User not found', 404);
+}
 
-  if (existing) {
-    await db
-      .update(authCredentials)
-      .set({ passwordHash, updatedAt: now })
-      .where(eq(authCredentials.profileId, profileId));
-  } else {
-    await db.insert(authCredentials).values({
-      profileId,
-      passwordHash,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  await db.delete(refreshTokens).where(eq(refreshTokens.profileId, profileId));
+export async function getKingschatProfiles(
+  kingschatId: string | null,
+  email: string | null,
+  username: string | null,
+  selectedEmail: string | null,
+): Promise<Array<typeof profiles.$inferSelect>> {
+  const rows = await db.execute(sql`
+    SELECT * FROM auth_internal.kingschat_profiles(${kingschatId}, ${email}, ${username}, ${selectedEmail})
+  `) as unknown as InternalProfileRow[];
+  return rows.map(profileFromInternal);
 }
 
 export async function issueTokensForProfile(

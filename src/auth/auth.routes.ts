@@ -10,7 +10,8 @@ import {
   getMe,
   register,
   AuthError,
-  setPasswordForProfile,
+  resetPasswordForEmail,
+  getKingschatProfiles,
   issueTokensForProfile,
 } from './auth.service';
 
@@ -304,32 +305,14 @@ const handleKingsChatLogin = async (req: any, res: any) => {
       return;
     }
 
-    const { eq, or, sql } = await import('drizzle-orm');
-    const { db } = await import('../db');
-    const { profiles } = await import('../schema');
-
     // 3. Robust Multi-level Profile Lookup:
     // Match by kingschatId column OR rawData jsonb OR verified email OR rawData email
-    const conditions = [];
-    if (kcUserId) {
-      conditions.push(eq(profiles.kingschatId, kcUserId));
-      conditions.push(sql`${profiles.rawData}->>'kingschatId' = ${kcUserId}`);
-      conditions.push(sql`${profiles.rawData}->>'kingschat_id' = ${kcUserId}`);
-    }
-    if (verifiedEmail) {
-      conditions.push(sql`lower(${profiles.email}) = ${verifiedEmail}`);
-      conditions.push(sql`lower(${profiles.rawData}->>'email') = ${verifiedEmail}`);
-    }
-    if (verifiedProfileData?.username) {
-      const uname = String(verifiedProfileData.username).toLowerCase().trim();
-      conditions.push(sql`lower(${profiles.rawData}->>'username') = ${uname}`);
-    }
-
-    let matchingProfiles = await db
-      .select()
-      .from(profiles)
-      .where(or(...conditions))
-      .limit(5);
+    const matchingProfiles = await getKingschatProfiles(
+      kcUserId,
+      verifiedEmail,
+      verifiedProfileData?.username ? String(verifiedProfileData.username).toLowerCase().trim() : null,
+      selectedEmail || null,
+    );
 
     if (matchingProfiles.length === 0) {
       res.json({
@@ -376,20 +359,6 @@ const handleKingsChatLogin = async (req: any, res: any) => {
       : matchingProfiles[0];
 
     // 4. Auto-link KingsChat ID if not already explicitly attached
-    if (kcUserId && profile.kingschatId !== kcUserId) {
-      try {
-        const prevRaw = (profile.rawData && typeof profile.rawData === 'object' ? profile.rawData : {}) as Record<string, any>;
-        await db.update(profiles)
-          .set({
-            kingschatId: kcUserId,
-            rawData: { ...prevRaw, kingschatId: kcUserId, kingschat_id: kcUserId },
-          })
-          .where(eq(profiles.id, profile.id));
-      } catch (linkErr) {
-        console.error('[KingsChat auto-link error]:', linkErr);
-      }
-    }
-
     const tokens = await issueTokensForProfile(profile);
 
     res.json({
@@ -500,19 +469,7 @@ router.post('/reset-password', async (req, res) => {
     const { email, newPassword } = parsed.data;
     const cleanEmail = email.toLowerCase();
 
-    const { sql } = await import('drizzle-orm');
-    const { db } = await import('../db');
-    const { profiles } = await import('../schema');
-
-    const [profile] = await db.select().from(profiles)
-      .where(sql`lower(${profiles.email}) = ${cleanEmail}`).limit(1);
-
-    if (!profile) {
-      res.status(400).json({ success: false, error: 'No account found with that email.' });
-      return;
-    }
-
-    await setPasswordForProfile(profile.id, newPassword);
+    await resetPasswordForEmail(cleanEmail, newPassword);
     otpStore.delete(cleanEmail);
 
     res.json({ success: true, message: 'Password has been reset successfully' });
