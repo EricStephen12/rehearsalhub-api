@@ -1,13 +1,12 @@
 import { Router } from 'express';
-import { eq, or, sql } from 'drizzle-orm';
 import crypto from 'crypto';
-import { db } from '../db';
-import { submittedSongs, profiles, notifications } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
-import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
 
 const router = Router();
+
+// ─── Notification Helper ─────────────────────────────────────────────────────
 
 async function createSubmissionNotification({
   targetUserId,
@@ -37,15 +36,8 @@ async function createSubmissionNotification({
   try {
     const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const now = new Date().toISOString();
-
     const rawData = {
-      id,
-      title,
-      message,
-      body: message,
-      type,
-      category,
-      priority,
+      id, title, message, body: message, type, category, priority,
       target_audience: targetAudience || (targetUserId ? 'user' : 'all'),
       targetAudience: targetAudience || (targetUserId ? 'user' : 'all'),
       target_user_id: targetUserId || null,
@@ -57,128 +49,122 @@ async function createSubmissionNotification({
       actionUrl: '/pages/submit-song',
       action_url: '/pages/submit-song',
       submissionId,
-      created_at: now,
-      createdAt: now,
-      sentAt: now,
-      is_read: false,
+      created_at: now, createdAt: now, sentAt: now, is_read: false,
     };
 
-    const notifRecord = {
-      id,
-      title,
-      message,
-      type,
-      category,
-      priority,
-      targetAudience: targetAudience || (targetUserId ? 'user' : 'all'),
-      targetUserId: targetUserId || null,
-      zoneId: zoneId || null,
-      senderId: senderId || null,
-      actionUrl: '/pages/submit-song',
-      isRead: false,
-      createdAt: now,
-      rawData,
-    };
-
-    await db.insert(notifications).values(notifRecord);
-
-    broadcast('notifications', 'all', notifRecord);
+    const record = await prisma.notification.create({
+      data: {
+        id, title, message, type, category, priority,
+        targetAudience: targetAudience || (targetUserId ? 'user' : 'all'),
+        targetUserId: targetUserId || null,
+        zoneId: zoneId || null,
+        senderId: senderId || null,
+        actionUrl: '/pages/submit-song',
+        isRead: false,
+        createdAt: now,
+        rawData,
+      },
+    });
+    broadcast('notifications', 'all', record);
   } catch (err) {
-    console.error('[createSubmissionNotification] Error:', err);
+    console.error('[createSubmissionNotification]', err);
   }
 }
 
+// ─── Shape Helper ─────────────────────────────────────────────────────────────
+
 function shapeSubmission(r: any) {
-  const m = mergeRawRow(r);
   const raw = (r.rawData && typeof r.rawData === 'object') ? (r.rawData as Record<string, any>) : {};
 
-  const title = (m.title as string) || (raw.songTitle as string) || (raw.title as string) || 'Untitled Song';
-  const writer = (m.writer as string) || (raw.writer as string) || (m.composer as string) || (raw.composer as string) || (m.artist as string) || (raw.artist as string) || 'Unknown Composer';
-  const artist = (m.artist as string) || (raw.artist as string) || (m.leadSinger as string) || (raw.leadSinger as string) || writer;
-  const leadSinger = (m.leadSinger as string) || (raw.leadSinger as string) || (raw.lead_singer as string) || '';
-  const lyrics = (m.lyrics as string) || (raw.lyrics as string) || '';
-  const audioUrl = (m.audioUrl as string) || (raw.audioUrl as string) || (raw.audio_url as string) || (raw.audioFile as string) || null;
-  const key = (m.key as string) || (raw.key as string) || (raw.songKey as string) || '';
-  const tempo = (m.tempo as string) || (raw.tempo as string) || '';
-  const solfas = (m.solfas as string) || (raw.solfas as string) || (raw.solfa as string) || '';
-  const category = (m.category as string) || (raw.category as string) || 'General';
-  const notes = (m.notes as string) || (raw.notes as string) || '';
-  const rejectNotes = (m.rejectNotes as string) || (raw.rejectNotes as string) || (raw.rejection_reason as string) || '';
-  const zoneName = (m.zoneName as string) || (raw.zoneName as string) || (raw.zone_name as string) || '';
-  const zoneId = (m.zoneId as string) || (r.zoneId as string) || (raw.zoneId as string) || (raw.zone_code as string) || '';
-  const submittedBy = (m.submittedBy as string) || (raw.submittedByName as string) || (raw.submitted_by_name as string) || (raw.userName as string) || (raw.user_name as string) || (r.submittedBy as string) || writer;
-  const submittedByEmail = (m.submittedByEmail as string) || (raw.submittedByEmail as string) || (raw.submitted_by_email as string) || (raw.userEmail as string) || (raw.user_email as string) || (r.submittedByEmail as string) || '';
-  const status = (m.status as string) || (r.status as string) || 'pending';
+  const title = r.title || raw.songTitle || raw.title || 'Untitled Song';
+  const writer = raw.writer || raw.composer || raw.artist || 'Unknown Composer';
+  const artist = raw.artist || raw.leadSinger || writer;
+  const leadSinger = raw.leadSinger || raw.lead_singer || '';
+  const lyrics = raw.lyrics || '';
+  const audioUrl = raw.audioUrl || raw.audio_url || raw.audioFile || null;
+  const key = raw.key || raw.songKey || '';
+  const tempo = raw.tempo || '';
+  const solfas = raw.solfas || raw.solfa || '';
+  const category = raw.category || 'General';
+  const notes = raw.notes || '';
+  const rejectNotes = raw.rejectNotes || raw.rejection_reason || '';
+  const zoneName = raw.zoneName || raw.zone_name || '';
+  const zoneId = r.zoneId || raw.zoneId || raw.zone_code || '';
+  const submittedBy = r.submittedBy || raw.submittedByName || raw.userName || writer;
+  const submittedByEmail = r.submittedByEmail || raw.submittedByEmail || raw.userEmail || '';
+  const status = r.status || 'pending';
   const createdAt = r.createdAt || raw.createdAt || raw.created_at || new Date().toISOString();
-  const conversation = Array.isArray(m.conversation) ? m.conversation : (Array.isArray(raw.conversation) ? raw.conversation : []);
+  const conversation = Array.isArray(raw.conversation) ? raw.conversation : [];
 
   return {
-    ...m,
+    ...raw,
     id: String(r.id),
-    userId: r.userId || raw.userId || raw.user_id || null,
-    title,
-    writer,
-    artist,
-    leadSinger,
-    lyrics,
-    audioUrl,
-    key,
-    tempo,
-    solfas,
-    category,
-    notes,
-    rejectNotes,
-    zoneName,
-    zoneId,
-    submittedBy,
-    submittedByEmail,
-    status,
-    conversation,
-    createdAt,
-    rawData: raw,
+    userId: r.userId || raw.userId || null,
+    title, writer, artist, leadSinger, lyrics, audioUrl, key, tempo,
+    solfas, category, notes, rejectNotes, zoneName, zoneId, submittedBy,
+    submittedByEmail, status, conversation, createdAt, rawData: raw,
   };
 }
 
-/** GET /submitted-songs (or /submissions) — List submissions */
+// ─── Tenant zone resolver ─────────────────────────────────────────────────────
+
+/**
+ * Resolves effective zone for a request.
+ * Priority: tenant middleware → JWT auth.zoneId → query param.
+ * Zone admins are ALWAYS scoped to their JWT zone — no override.
+ */
+function resolveEffectiveZone(req: any, auth: any): string | null {
+  const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
+  if (isHqAdmin) {
+    // HQ Admins can scope down via scope switcher header or query param
+    return req.tenant?.effectiveZoneId ?? null;
+  }
+  // Non-HQ: always lock to JWT zoneId (RLS-proof — doesn't depend on tenant middleware query)
+  return auth.zoneId || req.tenant?.effectiveZoneId || null;
+}
+
+const HQ_ZONE_IDS = new Set([
+  'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
+  'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
+  'hq', 'global', 'all',
+]);
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
+/** GET /submitted-songs — List submissions */
 router.get('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
-    const { zoneId, status, mine } = req.query;
+    const { status, mine } = req.query;
+    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
+    const isZoneAdmin = auth.role === 'zone_admin' || auth.role === 'zone_coordinator' || auth.role === 'coordinator' || auth.role === 'church_coordinator';
+    const effectiveZoneId = resolveEffectiveZone(req, auth);
 
-    const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
-    const isZoneAdmin = auth.role === 'zone_admin';
-    const isChurchCoordinator = auth.role === 'church_coordinator';
+    let rows: any[];
 
-    const effectiveZoneId = req.tenant?.effectiveZoneId !== undefined
-      ? req.tenant.effectiveZoneId
-      : ((zoneId && zoneId !== 'all') ? String(zoneId) : (!isHqAdmin ? (auth.zoneId as string | null) : null));
-
-    const HQ_GROUP_IDS = new Set([
-      'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
-      'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
-      'hq', 'global', 'all'
-    ]);
-
-    let rows: any[] = [];
-    if (mine === 'true' || (!isHqAdmin && !isZoneAdmin && !isChurchCoordinator)) {
-      // Regular singer / member viewing their own submissions
-      rows = await db.select().from(submittedSongs).where(eq(submittedSongs.userId, auth.userId));
-    } else if (effectiveZoneId && !HQ_GROUP_IDS.has(effectiveZoneId.toLowerCase().trim())) {
-      // Zonal / Church Coordinator or HQ Admin inspecting specific zone
+    if (mine === 'true' || (!isHqAdmin && !isZoneAdmin)) {
+      // Regular singer — own submissions only
+      rows = await prisma.submittedSong.findMany({
+        where: { userId: auth.userId },
+        orderBy: { createdAt: 'desc' },
+      });
+    } else if (effectiveZoneId && !HQ_ZONE_IDS.has(effectiveZoneId.toLowerCase().trim())) {
+      // Zone-scoped coordinator or HQ Admin inspecting a specific zone
+      // Use case-insensitive zone matching via Prisma raw filtering on rawData
       const cleanZone = effectiveZoneId.toLowerCase().trim();
-      const withoutHyphen = cleanZone.replace(/[\s-_]/g, '');
-      const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
-
-      rows = await db.select().from(submittedSongs).where(
-        sql`lower(replace(replace(${submittedSongs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR 
-            lower(${submittedSongs.zoneId}) = ${cleanZone} OR 
-            lower(${submittedSongs.zoneId}) = ${withHyphen} OR 
-            lower(replace(replace(${submittedSongs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR 
-            lower(replace(replace(${submittedSongs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen}`
+      const withoutHyphen = cleanZone.replace(/[\s\-_]/g, '');
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM submitted_songs
+         WHERE lower(replace(replace(zone_id, '-', ''), ' ', '')) = $1
+            OR lower(zone_id) = $2
+            OR lower(replace(replace(raw_data->>'zoneId', '-', ''), ' ', '')) = $1
+            OR lower(replace(replace(raw_data->>'zone_code', '-', ''), ' ', '')) = $1`,
+        withoutHyphen,
+        cleanZone,
       );
     } else {
-      // HQ Scope / Global View: include all submissions (unassigned, international, pending)
-      rows = await db.select().from(submittedSongs);
+      // HQ global view — all submissions
+      rows = await prisma.submittedSong.findMany({ orderBy: { createdAt: 'desc' } });
     }
 
     let data = rows.map(shapeSubmission);
@@ -187,29 +173,17 @@ router.get('/', requireAuth, async (req: any, res) => {
     }
 
     function getActivityTimestamp(s: any): number {
-      const candidates = [
-        s.lastActivityAt,
-        s.updatedAt,
-        s.createdAt,
-        s.rawData?.lastActivityAt,
-        s.rawData?.updatedAt,
-        s.rawData?.createdAt,
-        s.rawData?.submittedAt,
-      ];
+      const candidates = [s.lastActivityAt, s.updatedAt, s.createdAt, s.rawData?.lastActivityAt, s.rawData?.updatedAt, s.rawData?.createdAt];
       if (Array.isArray(s.conversation) && s.conversation.length > 0) {
-        const lastMsg = s.conversation[s.conversation.length - 1];
-        if (lastMsg?.timestamp) candidates.push(lastMsg.timestamp);
+        const last = s.conversation[s.conversation.length - 1];
+        if (last?.timestamp) candidates.push(last.timestamp);
       }
       for (const c of candidates) {
-        if (c) {
-          const ms = new Date(c).getTime();
-          if (!isNaN(ms) && ms > 0) return ms;
-        }
+        if (c) { const ms = new Date(c).getTime(); if (!isNaN(ms) && ms > 0) return ms; }
       }
       return 0;
     }
 
-    // Sort by latest update / reply / submission to the top
     data.sort((a, b) => getActivityTimestamp(b) - getActivityTimestamp(a));
     res.json({ success: true, count: data.length, data });
   } catch (err) {
@@ -222,17 +196,15 @@ router.get('/', requireAuth, async (req: any, res) => {
 router.get('/mine', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId;
-    const rows = await db
-      .select()
-      .from(submittedSongs)
-      .where(
-        or(
-          eq(submittedSongs.userId, userId),
-          sql`${submittedSongs.rawData}->>'user_id' = ${userId}`,
-          sql`${submittedSongs.rawData}->>'userId' = ${userId}`,
-        )
-      );
-    const data = rows.map(shapeSubmission).sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM submitted_songs
+       WHERE user_id = $1
+          OR raw_data->>'user_id' = $1
+          OR raw_data->>'userId' = $1`,
+      userId,
+    );
+    const data = rows.map(shapeSubmission)
+      .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
     res.json({ success: true, count: data.length, data });
   } catch (err) {
     console.error('[submitted-songs:mine]', err);
@@ -240,7 +212,7 @@ router.get('/mine', requireAuth, async (_req, res) => {
   }
 });
 
-/** POST /submitted-songs (or /submissions) — Create song submission */
+/** POST /submitted-songs — Create song submission */
 router.post('/', requireAuth, async (req: any, res) => {
   try {
     const auth = res.locals.auth;
@@ -248,27 +220,26 @@ router.post('/', requireAuth, async (req: any, res) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
-    const rawProfile = (userProfile?.rawData && typeof userProfile.rawData === 'object') ? (userProfile.rawData as Record<string, any>) : {};
+    const userProfile = await prisma.profile.findUnique({ where: { id: userId } });
+    const rawProfile = (userProfile?.rawData && typeof userProfile.rawData === 'object')
+      ? (userProfile.rawData as Record<string, any>) : {};
 
     const requestedZone = req.body.zoneId || req.body.zone_id;
-    if (!req.tenant?.isHQAdmin && requestedZone && req.tenant?.effectiveZoneId && requestedZone !== req.tenant.effectiveZoneId) {
-      res.status(403).json({
-        success: false,
-        error: 'Forbidden: Cannot create or modify records outside your assigned tenant zone.',
-      });
+    const effectiveZoneId = resolveEffectiveZone(req, auth);
+    if (!req.tenant?.isHQAdmin && requestedZone && effectiveZoneId && requestedZone !== effectiveZoneId) {
+      res.status(403).json({ success: false, error: 'Forbidden: Cannot create records outside your assigned zone.' });
       return;
     }
 
-    const fullName = [userProfile?.firstName, userProfile?.lastName].filter(Boolean).join(' ') || (rawProfile.first_name ? `${rawProfile.first_name} ${rawProfile.last_name || ''}` : '') || auth.email;
+    const fullName = [userProfile?.firstName, userProfile?.lastName].filter(Boolean).join(' ')
+      || (rawProfile.first_name ? `${rawProfile.first_name} ${rawProfile.last_name || ''}` : '')
+      || auth.email;
     const userEmail = userProfile?.email || auth.email || '';
-    const userZone = req.tenant?.effectiveZoneId || auth.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
-    const userZoneName = req.body.zoneName || req.tenant?.effectiveZoneId || userZone;
+    const userZone = effectiveZoneId || auth.zoneId || rawProfile.zone_code || rawProfile.zoneId || 'general';
+    const userZoneName = req.body.zoneName || userZone;
 
     const submissionRaw = {
-      id,
-      userId,
-      user_id: userId,
+      id, userId, user_id: userId,
       title: req.body.title?.trim() || 'Untitled Song',
       writer: req.body.writer?.trim() || fullName,
       artist: req.body.artist?.trim() || req.body.leadSinger?.trim() || fullName,
@@ -280,32 +251,25 @@ router.post('/', requireAuth, async (req: any, res) => {
       category: req.body.category || 'General',
       notes: req.body.notes?.trim() || '',
       audioUrl: req.body.audioUrl || req.body.audio_url || null,
-      zoneId: userZone,
-      zoneName: userZoneName,
-      submittedBy: fullName,
-      submittedByEmail: userEmail,
-      status: 'pending',
-      createdAt: now,
-      updatedAt: now,
+      zoneId: userZone, zoneName: userZoneName,
+      submittedBy: fullName, submittedByEmail: userEmail,
+      status: 'pending', createdAt: now, updatedAt: now,
     };
 
-    const [inserted] = await db.insert(submittedSongs).values({
-      id,
-      userId,
-      title: submissionRaw.title,
-      status: 'pending',
-      zoneId: userZone,
-      submittedBy: fullName,
-      submittedByEmail: userEmail,
-      createdAt: new Date(),
-      rawData: submissionRaw,
-    }).returning();
-
-    res.status(201).json({
-      success: true,
-      message: 'Song submitted successfully',
-      data: shapeSubmission(inserted),
+    const inserted = await prisma.submittedSong.create({
+      data: {
+        id, userId,
+        title: submissionRaw.title,
+        status: 'pending',
+        zoneId: userZone,
+        submittedBy: fullName,
+        submittedByEmail: userEmail,
+        createdAt: new Date(),
+        rawData: submissionRaw,
+      },
     });
+
+    res.status(201).json({ success: true, message: 'Song submitted successfully', data: shapeSubmission(inserted) });
   } catch (err: any) {
     console.error('[submitted-songs:create]', err);
     res.status(500).json({ success: false, error: err?.message || 'Failed to submit song' });
@@ -318,10 +282,8 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
     const { id } = req.params;
     const { status, notes, rejectNotes, title, lyrics, writer, leadSinger, key, audioUrl } = req.body;
 
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
-    if (!existing) {
-      return res.status(404).json({ success: false, error: 'Submission not found' });
-    }
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
 
     const existingRaw = (existing.rawData as Record<string, any>) || {};
     const updatedRaw = {
@@ -339,15 +301,10 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
       reviewedBy: res.locals.auth.userId,
     };
 
-    const [updated] = await db
-      .update(submittedSongs)
-      .set({
-        title: title || existing.title,
-        status: status || existing.status,
-        rawData: updatedRaw,
-      })
-      .where(eq(submittedSongs.id, id))
-      .returning();
+    const updated = await prisma.submittedSong.update({
+      where: { id },
+      data: { title: title || existing.title, status: status || existing.status, rawData: updatedRaw },
+    });
 
     res.json({ success: true, message: 'Submission updated', data: shapeSubmission(updated) });
   } catch (err) {
@@ -360,30 +317,26 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
 router.post('/:id/approve', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ success: false, error: 'Not found' });
 
     const raw = (existing.rawData as Record<string, any>) || {};
-    const updatedRaw = { ...raw, status: 'approved', approvedAt: new Date().toISOString(), approvedBy: res.locals.auth.userId };
+    await prisma.submittedSong.update({
+      where: { id },
+      data: { status: 'approved', rawData: { ...raw, status: 'approved', approvedAt: new Date().toISOString(), approvedBy: res.locals.auth.userId } },
+    });
 
-    await db.update(submittedSongs).set({ status: 'approved', rawData: updatedRaw }).where(eq(submittedSongs.id, id));
-
-    const songTitle = existing.title || raw.songTitle || raw.title || 'Submitted Song';
+    const songTitle = existing.title || raw.title || 'Submitted Song';
     if (existing.userId) {
       await createSubmissionNotification({
         targetUserId: existing.userId,
         title: `Song Submission Approved! 🎉`,
-        message: `Congratulations! Your song "${songTitle}" has been approved by the ministry review team.`,
-        type: 'success',
-        category: 'song_submission',
-        priority: 'high',
-        senderName: res.locals.auth.name || 'HQ Admin',
-        senderId: res.locals.auth.userId,
-        submissionId: id,
-        zoneId: existing.zoneId || undefined,
+        message: `Congratulations! Your song "${songTitle}" has been approved.`,
+        type: 'success', category: 'song_submission', priority: 'high',
+        senderName: res.locals.auth.name || 'HQ Admin', senderId: res.locals.auth.userId,
+        submissionId: id, zoneId: existing.zoneId || undefined,
       });
     }
-
     res.json({ success: true, message: 'Song approved successfully' });
   } catch (err) {
     console.error('[submitted-songs:approve]', err);
@@ -396,37 +349,27 @@ router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req: any, res
   try {
     const { id } = req.params;
     const { notes, reason } = req.body;
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ success: false, error: 'Not found' });
 
     const raw = (existing.rawData as Record<string, any>) || {};
-    const updatedRaw = {
-      ...raw,
-      status: 'rejected',
-      rejectNotes: notes || reason || raw.rejectNotes,
-      rejectedAt: new Date().toISOString(),
-      rejectedBy: res.locals.auth.userId,
-    };
+    const rejectNote = notes || reason || raw.rejectNotes;
+    await prisma.submittedSong.update({
+      where: { id },
+      data: { status: 'rejected', rawData: { ...raw, status: 'rejected', rejectNotes: rejectNote, rejectedAt: new Date().toISOString(), rejectedBy: res.locals.auth.userId } },
+    });
 
-    await db.update(submittedSongs).set({ status: 'rejected', rawData: updatedRaw }).where(eq(submittedSongs.id, id));
-
-    const songTitle = existing.title || raw.songTitle || raw.title || 'Submitted Song';
-    const reasonText = notes || reason || raw.rejectNotes || 'Please check feedback notes.';
+    const songTitle = existing.title || raw.title || 'Submitted Song';
     if (existing.userId) {
       await createSubmissionNotification({
         targetUserId: existing.userId,
         title: `Song Submission Update: "${songTitle}"`,
-        message: `Feedback on your song "${songTitle}": ${reasonText}`,
-        type: 'info',
-        category: 'song_submission',
-        priority: 'normal',
-        senderName: res.locals.auth.name || 'HQ Admin',
-        senderId: res.locals.auth.userId,
-        submissionId: id,
-        zoneId: existing.zoneId || undefined,
+        message: `Feedback on your song "${songTitle}": ${rejectNote || 'Please check feedback notes.'}`,
+        type: 'info', category: 'song_submission', priority: 'normal',
+        senderName: res.locals.auth.name || 'HQ Admin', senderId: res.locals.auth.userId,
+        submissionId: id, zoneId: existing.zoneId || undefined,
       });
     }
-
     res.json({ success: true, message: 'Song submission rejected' });
   } catch (err) {
     console.error('[submitted-songs:reject]', err);
@@ -435,10 +378,10 @@ router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req: any, res
 });
 
 /** DELETE /submitted-songs/:id */
-router.delete('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
+router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    await db.delete(submittedSongs).where(eq(submittedSongs.id, id));
+    await prisma.submittedSong.delete({ where: { id } });
     res.json({ success: true, message: 'Song submission deleted' });
   } catch (err) {
     console.error('[submitted-songs:delete]', err);
@@ -446,24 +389,21 @@ router.delete('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => 
   }
 });
 
-/** POST /submitted-songs/:id/reply — Post comment/reply */
+/** POST /submitted-songs/:id/reply */
 router.post('/:id/reply', requireAuth, async (req: any, res) => {
   try {
     const { id } = req.params;
     const { message, senderName, replyTo } = req.body;
     const auth = res.locals.auth;
+    if (!message?.trim()) return res.status(400).json({ success: false, error: 'Message cannot be empty' });
 
-    if (!message || !message.trim()) {
-      return res.status(400).json({ success: false, error: 'Message cannot be empty' });
-    }
-
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ success: false, error: 'Not found' });
 
     const raw = (existing.rawData as Record<string, any>) || {};
     const conversation = Array.isArray(raw.conversation) ? [...raw.conversation] : [];
-    
     const isUserSender = existing.userId === auth.userId;
+
     const newMessage = {
       id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       sender: isUserSender ? 'user' : 'admin',
@@ -480,45 +420,32 @@ router.post('/:id/reply', requireAuth, async (req: any, res) => {
     };
 
     conversation.push(newMessage);
-
     const updatedRaw = {
-      ...raw,
-      conversation,
+      ...raw, conversation,
       ...(isUserSender ? { userReply: message.trim() } : { replyMessage: message.trim() }),
-      lastActivityAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
 
-    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    await prisma.submittedSong.update({ where: { id }, data: { rawData: updatedRaw } });
 
-    const songTitle = existing.title || raw.songTitle || raw.title || 'Submitted Song';
+    const songTitle = existing.title || raw.title || 'Submitted Song';
     if (!isUserSender && existing.userId) {
-      // Admin replied to singer -> notify singer
       await createSubmissionNotification({
         targetUserId: existing.userId,
         title: `New Message on "${songTitle}"`,
         message: `${newMessage.senderName}: "${message.trim().substring(0, 100)}"`,
-        type: 'info',
-        category: 'song_submission',
-        priority: 'high',
-        senderName: newMessage.senderName,
-        senderId: auth.userId,
-        submissionId: id,
-        zoneId: existing.zoneId || undefined,
+        type: 'info', category: 'song_submission', priority: 'high',
+        senderName: newMessage.senderName, senderId: auth.userId,
+        submissionId: id, zoneId: existing.zoneId || undefined,
       });
     } else if (isUserSender) {
-      // Singer replied -> Notify admin reviewers
       await createSubmissionNotification({
         targetAudience: 'admins',
         title: `Reply on Song: "${songTitle}"`,
         message: `${newMessage.senderName}: "${message.trim().substring(0, 100)}"`,
-        type: 'info',
-        category: 'song_submission',
-        priority: 'normal',
-        senderName: newMessage.senderName,
-        senderId: auth.userId,
-        submissionId: id,
-        zoneId: existing.zoneId || undefined,
+        type: 'info', category: 'song_submission', priority: 'normal',
+        senderName: newMessage.senderName, senderId: auth.userId,
+        submissionId: id, zoneId: existing.zoneId || undefined,
       });
     }
 
@@ -534,36 +461,18 @@ router.patch('/:id/conversation/:messageId', requireAuth, async (req: any, res) 
   try {
     const { id, messageId } = req.params;
     const { message } = req.body;
+    if (!message?.trim()) return res.status(400).json({ success: false, error: 'Updated message cannot be empty' });
 
-    if (!message || !message.trim()) {
-      return res.status(400).json({ success: false, error: 'Updated message cannot be empty' });
-    }
-
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
 
     const raw = (existing.rawData as Record<string, any>) || {};
     const conversation = Array.isArray(raw.conversation) ? [...raw.conversation] : [];
-
     const msgIdx = conversation.findIndex((m: any) => m.id === messageId);
-    if (msgIdx === -1) {
-      return res.status(404).json({ success: false, error: 'Message not found' });
-    }
+    if (msgIdx === -1) return res.status(404).json({ success: false, error: 'Message not found' });
 
-    conversation[msgIdx] = {
-      ...conversation[msgIdx],
-      message: message.trim(),
-      isEdited: true,
-      editedAt: new Date().toISOString(),
-    };
-
-    const updatedRaw = {
-      ...raw,
-      conversation,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    conversation[msgIdx] = { ...conversation[msgIdx], message: message.trim(), isEdited: true, editedAt: new Date().toISOString() };
+    await prisma.submittedSong.update({ where: { id }, data: { rawData: { ...raw, conversation, updatedAt: new Date().toISOString() } } });
     res.json({ success: true, message: 'Message updated', data: conversation });
   } catch (err) {
     console.error('[submitted-songs:edit-message]', err);
@@ -571,26 +480,16 @@ router.patch('/:id/conversation/:messageId', requireAuth, async (req: any, res) 
   }
 });
 
-/** DELETE /submitted-songs/:id/conversation/:messageId — Delete message */
-router.delete('/:id/conversation/:messageId', requireAuth, async (req: any, res) => {
+/** DELETE /submitted-songs/:id/conversation/:messageId */
+router.delete('/:id/conversation/:messageId', requireAuth, async (req, res) => {
   try {
     const { id, messageId } = req.params;
-
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
 
     const raw = (existing.rawData as Record<string, any>) || {};
-    const conversation = (Array.isArray(raw.conversation) ? raw.conversation : []).filter(
-      (m: any) => m.id !== messageId
-    );
-
-    const updatedRaw = {
-      ...raw,
-      conversation,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    const conversation = (Array.isArray(raw.conversation) ? raw.conversation : []).filter((m: any) => m.id !== messageId);
+    await prisma.submittedSong.update({ where: { id }, data: { rawData: { ...raw, conversation, updatedAt: new Date().toISOString() } } });
     res.json({ success: true, message: 'Message deleted', data: conversation });
   } catch (err) {
     console.error('[submitted-songs:delete-message]', err);
@@ -598,29 +497,27 @@ router.delete('/:id/conversation/:messageId', requireAuth, async (req: any, res)
   }
 });
 
-/** POST /submitted-songs/:id/conversation/:messageId/react — Toggle emoji reaction */
+/** POST /submitted-songs/:id/conversation/:messageId/react */
 router.post('/:id/conversation/:messageId/react', requireAuth, async (req: any, res) => {
   try {
     const { id, messageId } = req.params;
     const { emoji } = req.body;
     const auth = res.locals.auth;
-
     if (!emoji) return res.status(400).json({ success: false, error: 'Emoji is required' });
 
-    const [existing] = await db.select().from(submittedSongs).where(eq(submittedSongs.id, id)).limit(1);
+    const existing = await prisma.submittedSong.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ success: false, error: 'Submission not found' });
 
     const raw = (existing.rawData as Record<string, any>) || {};
     const conversation = Array.isArray(raw.conversation) ? [...raw.conversation] : [];
-
     const msgIdx = conversation.findIndex((m: any) => m.id === messageId);
     if (msgIdx === -1) return res.status(404).json({ success: false, error: 'Message not found' });
 
     const msg = conversation[msgIdx];
     const reactions = { ...(msg.reactions || {}) };
     const currentUsers: string[] = Array.isArray(reactions[emoji]) ? [...reactions[emoji]] : [];
-
     const userIdentifier = auth.userId || auth.email || 'user';
+
     if (currentUsers.includes(userIdentifier)) {
       reactions[emoji] = currentUsers.filter((u: string) => u !== userIdentifier);
       if (reactions[emoji].length === 0) delete reactions[emoji];
@@ -629,14 +526,7 @@ router.post('/:id/conversation/:messageId/react', requireAuth, async (req: any, 
     }
 
     conversation[msgIdx] = { ...msg, reactions };
-
-    const updatedRaw = {
-      ...raw,
-      conversation,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await db.update(submittedSongs).set({ rawData: updatedRaw }).where(eq(submittedSongs.id, id));
+    await prisma.submittedSong.update({ where: { id }, data: { rawData: { ...raw, conversation, updatedAt: new Date().toISOString() } } });
     res.json({ success: true, data: conversation });
   } catch (err) {
     console.error('[submitted-songs:react]', err);

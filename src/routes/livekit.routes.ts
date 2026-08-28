@@ -1,121 +1,48 @@
 import { Router } from 'express';
 import { AccessToken } from 'livekit-server-sdk';
 import { requireAuth } from '../auth/auth.middleware';
-import { db } from '../db';
-import { calls } from '../schema';
-import { and, eq, or } from 'drizzle-orm';
+import prisma from '../lib/prisma';
 
 const router = Router();
-
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || '';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
 const LIVEKIT_URL = process.env.LIVEKIT_URL || 'wss://rehearsal-hub-livekit.cloud';
 
-/**
- * Shared token generator — works for both GET and POST.
- * room: the LiveKit room name (usually the callId)
- * participant: the user's unique ID (used as the participant identity)
- */
 async function generateToken(room: string, participant: string): Promise<string> {
-  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-    identity: participant,
-    // Token valid for 4 hours — long enough for any realistic call
-    ttl: '4h',
-  });
-
-  at.addGrant({
-    room,
-    roomJoin: true,
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-  });
-
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity: participant, ttl: '4h' });
+  at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true });
   return at.toJwt();
 }
 
 async function canJoinRoom(room: string, userId: string): Promise<boolean> {
-  const [call] = await db.select({ id: calls.id }).from(calls).where(and(
-    or(
-      eq(calls.id, room),
-      eq(calls.roomId, room),
-    ),
-    or(eq(calls.callerId, userId), eq(calls.receiverId, userId)),
-  )).limit(1);
+  const call = await prisma.call.findFirst({
+    where: { OR: [{ id: room }, { roomId: room }], AND: [{ OR: [{ callerId: userId }, { receiverId: userId }] }] },
+  });
   return Boolean(call);
 }
 
-/**
- * GET /livekit-token?room=<roomName>&participant=<userId>
- * Used by rehearsalhubv2 (CallScreen.tsx) to join a call room.
- */
 router.get('/', requireAuth, async (req, res) => {
   try {
     const { room, participant } = req.query as { room?: string; participant?: string };
-
-    if (!room || !participant) {
-      res.status(400).json({ success: false, error: 'room and participant query params are required' });
-      return;
-    }
-    if (participant !== res.locals.auth.userId || !(await canJoinRoom(room, participant))) {
-      res.status(403).json({ success: false, error: 'You are not a participant in this call' });
-      return;
-    }
-
-    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
-      console.error('[livekit-token] LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set');
-      res.status(503).json({ success: false, error: 'LiveKit is not configured on this server' });
-      return;
-    }
-
+    if (!room || !participant) return res.status(400).json({ success: false, error: 'room and participant query params are required' });
+    if (participant !== res.locals.auth.userId || !(await canJoinRoom(room, participant))) return res.status(403).json({ success: false, error: 'You are not a participant in this call' });
+    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) return res.status(503).json({ success: false, error: 'LiveKit is not configured on this server' });
     const token = await generateToken(room, participant);
-
-    res.json({
-      success: true,
-      token,
-      url: LIVEKIT_URL,
-      room,
-      participant,
-    });
+    res.json({ success: true, token, url: LIVEKIT_URL, room, participant });
   } catch (err) {
     console.error('[livekit-token:get]', err);
     res.status(500).json({ success: false, error: 'Failed to generate LiveKit token' });
   }
 });
 
-/**
- * POST /livekit-token
- * Body: { room: string, participant: string }
- * Used by the web portal (or any client that prefers POST over GET).
- */
 router.post('/', requireAuth, async (req, res) => {
   try {
     const { room, participant } = req.body as { room?: string; participant?: string };
-
-    if (!room || !participant) {
-      res.status(400).json({ success: false, error: 'room and participant body fields are required' });
-      return;
-    }
-    if (participant !== res.locals.auth.userId || !(await canJoinRoom(room, participant))) {
-      res.status(403).json({ success: false, error: 'You are not a participant in this call' });
-      return;
-    }
-
-    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
-      console.error('[livekit-token] LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set');
-      res.status(503).json({ success: false, error: 'LiveKit is not configured on this server' });
-      return;
-    }
-
+    if (!room || !participant) return res.status(400).json({ success: false, error: 'room and participant body fields are required' });
+    if (participant !== res.locals.auth.userId || !(await canJoinRoom(room, participant))) return res.status(403).json({ success: false, error: 'You are not a participant in this call' });
+    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) return res.status(503).json({ success: false, error: 'LiveKit is not configured on this server' });
     const token = await generateToken(room, participant);
-
-    res.json({
-      success: true,
-      token,
-      url: LIVEKIT_URL,
-      room,
-      participant,
-    });
+    res.json({ success: true, token, url: LIVEKIT_URL, room, participant });
   } catch (err) {
     console.error('[livekit-token:post]', err);
     res.status(500).json({ success: false, error: 'Failed to generate LiveKit token' });

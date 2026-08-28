@@ -1,16 +1,12 @@
 import crypto from 'crypto';
 import { Router } from 'express';
-import { eq, inArray, sql, and, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
-import { profiles, authCredentials, notifications, zoneMembers, hqMembers } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { hashPassword } from '../auth/password';
 import { broadcast } from '../ws/wsServer';
 
 const router = Router();
-
-type ProfileRow = typeof profiles.$inferSelect;
 
 function asRaw(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === 'object' && !Array.isArray(raw)
@@ -18,7 +14,7 @@ function asRaw(raw: unknown): Record<string, unknown> {
     : {};
 }
 
-function directoryDto(row: ProfileRow) {
+function directoryDto(row: any) {
   const raw = asRaw(row.rawData);
   const avatar = row.avatarUrl ?? (typeof raw.avatar === 'string' ? raw.avatar : (typeof raw.profile_image_url === 'string' ? raw.profile_image_url : null));
   const phone = typeof raw.phone === 'string' ? raw.phone : (typeof raw.phone_number === 'string' ? raw.phone_number : (typeof raw.phoneNumber === 'string' ? raw.phoneNumber : null));
@@ -122,17 +118,15 @@ router.get('/check-username/:username', requireAuth, async (req, res) => {
     return;
   }
 
-  const [existing] = await db
-    .select({ id: profiles.id })
-    .from(profiles)
-    .where(
-      or(
-        sql`lower(${profiles.rawData}->>'username') = ${usernameParam}`,
-        sql`lower(${profiles.rawData}->>'alias') = ${usernameParam}`
-      )
-    )
-    .limit(1);
+  const existingRows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT id FROM profiles
+     WHERE lower(raw_data->>'username') = $1
+        OR lower(raw_data->>'alias') = $1
+     LIMIT 1`,
+    usernameParam,
+  );
 
+  const existing = existingRows[0];
   const isAvailable = !existing || ((req as any).auth?.userId && existing.id === (req as any).auth.userId);
   res.json({ success: true, available: Boolean(isAvailable), username: usernameParam });
 });
@@ -143,30 +137,27 @@ router.get('/', requireAuth, async (req, res) => {
 
   if (typeof username === 'string') {
     const clean = username.trim().toLowerCase().replace(/^@/, '');
-    const rows = await db
-      .select()
-      .from(profiles)
-      .where(
-        or(
-          sql`lower(${profiles.rawData}->>'username') = ${clean}`,
-          sql`lower(${profiles.rawData}->>'alias') = ${clean}`
-        )
-      );
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM profiles
+       WHERE lower(raw_data->>'username') = $1
+          OR lower(raw_data->>'alias') = $1`,
+      clean,
+    );
     res.json({ success: true, data: rows.map(directoryDto) });
     return;
   }
 
   if (typeof kingschat_id === 'string') {
-    const rows = await db.select().from(profiles).where(eq(profiles.kingschatId, kingschat_id));
+    const rows = await prisma.profile.findMany({ where: { kingschatId: kingschat_id } });
     res.json({ success: true, data: rows });
     return;
   }
 
   if (typeof email === 'string') {
-    const rows = await db
-      .select()
-      .from(profiles)
-      .where(sql`lower(${profiles.email}) = ${email.toLowerCase()}`);
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM profiles WHERE lower(email) = $1`,
+      email.toLowerCase(),
+    );
     res.json({ success: true, data: rows });
     return;
   }
@@ -177,12 +168,57 @@ router.get('/', requireAuth, async (req, res) => {
       res.json({ success: true, data: [] });
       return;
     }
-    const rows = await db.select().from(profiles).where(inArray(profiles.id, idList));
+    const rows = await prisma.profile.findMany({ where: { id: { in: idList } } });
     res.json({ success: true, data: rows });
     return;
   }
 
   res.status(400).json({ success: false, error: 'Provide kingschat_id, email, or ids query param' });
+});
+
+// GET /profiles/birthdays — Get users with birthdays today & upcoming
+router.get('/birthdays', requireAuth, async (req, res) => {
+  try {
+    const { zoneId } = req.query;
+    let rows: any[];
+    if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
+      const cleanZone = String(zoneId).toLowerCase().trim().replace(/[\s-_]/g, '');
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM profiles
+         WHERE (raw_data->>'birthday' IS NOT NULL AND raw_data->>'birthday' != '')
+           AND (lower(replace(replace(COALESCE(raw_data->>'zone_code', ''), '-', ''), ' ', '')) = $1
+             OR lower(replace(replace(COALESCE(raw_data->>'zoneCode', ''), '-', ''), ' ', '')) = $1
+             OR lower(replace(replace(COALESCE(raw_data->>'zoneId', ''), '-', ''), ' ', '')) = $1
+             OR lower(replace(replace(COALESCE(raw_data->>'zone_id', ''), '-', ''), ' ', '')) = $1)`,
+        cleanZone,
+      );
+    } else {
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM profiles WHERE raw_data->>'birthday' IS NOT NULL AND raw_data->>'birthday' != ''`
+      );
+    }
+
+    const todayStr = new Date().toISOString().slice(5, 10); // MM-DD
+    const result = rows.map((r) => {
+      const raw = asRaw(r.rawData);
+      const bday = typeof raw.birthday === 'string' ? raw.birthday : '';
+      const bdayMMDD = bday ? bday.slice(5, 10) : '';
+      return {
+        id: r.id,
+        first_name: r.firstName || (typeof raw.first_name === 'string' ? raw.first_name : 'Member'),
+        last_name: r.lastName || (typeof raw.last_name === 'string' ? raw.last_name : ''),
+        birthday: bday,
+        profile_image_url: r.avatarUrl || (typeof raw.profile_image_url === 'string' ? raw.profile_image_url : ''),
+        isToday: bdayMMDD === todayStr,
+        zoneId: typeof raw.zone_code === 'string' ? raw.zone_code : (typeof raw.zoneCode === 'string' ? raw.zoneCode : ''),
+      };
+    });
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('[profiles/birthdays]', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch birthdays' });
+  }
 });
 
 // GET /profiles/directory
@@ -201,14 +237,18 @@ router.get('/directory', requireAuth, async (req, res) => {
   // If specific IDs are requested
   if (idList.length > 0) {
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
-    const rows = await db.select().from(profiles).where(inArray(profiles.id, idList));
+    const rows = await prisma.profile.findMany({ where: { id: { in: idList } } });
     if (!isHqAdmin) {
       const zoneId = req.tenant?.effectiveZoneId;
       const normalizedZone = String(zoneId || '').replace(/-/g, '').toLowerCase();
-      const memberships = await db.select().from(zoneMembers).where(
-        sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${normalizedZone} AND ${zoneMembers.userId} IN (${sql.join(idList.map((id) => sql`${id}`), sql`, `)})`,
+      const memberships = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT user_id FROM zone_members
+         WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
+           AND user_id = ANY($2::text[])`,
+        normalizedZone,
+        idList,
       );
-      const allowedIds = new Set(memberships.map((membership) => membership.userId));
+      const allowedIds = new Set(memberships.map((m) => m.user_id));
       const scopedRows = rows.filter((row) => allowedIds.has(row.id) || row.id === auth.userId);
       res.json({ success: true, data: scopedRows.map(directoryDto) });
       return;
@@ -228,30 +268,39 @@ router.get('/directory', requireAuth, async (req, res) => {
     const withHyphen = targetZone.includes('-') ? targetZone.toLowerCase() : targetZone.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
 
     const [directProfiles, zmRows, hmRows] = await Promise.all([
-      db.select().from(profiles).where(
-        sql`(
-          lower(replace(${profiles.rawData}->>'zone_code', '-', '')) = ${withoutHyphen} OR 
-          lower(replace(${profiles.rawData}->>'zoneCode', '-', '')) = ${withoutHyphen} OR 
-          lower(replace(${profiles.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
-          lower(replace(${profiles.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR
-          lower(${profiles.rawData}->>'zone_code') = ${withHyphen} OR
-          lower(${profiles.rawData}->>'zoneCode') = ${withHyphen} OR
-          lower(${profiles.rawData}->>'zoneId') = ${withHyphen} OR
-          lower(${profiles.rawData}->>'zone_id') = ${withHyphen}
-        )`
+      prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM profiles
+         WHERE lower(replace(COALESCE(raw_data->>'zone_code', ''), '-', '')) = $1
+            OR lower(replace(COALESCE(raw_data->>'zoneCode', ''), '-', '')) = $1
+            OR lower(replace(COALESCE(raw_data->>'zoneId', ''), '-', '')) = $1
+            OR lower(replace(COALESCE(raw_data->>'zone_id', ''), '-', '')) = $1
+            OR lower(COALESCE(raw_data->>'zone_code', '')) = $2
+            OR lower(COALESCE(raw_data->>'zoneCode', '')) = $2
+            OR lower(COALESCE(raw_data->>'zoneId', '')) = $2
+            OR lower(COALESCE(raw_data->>'zone_id', '')) = $2`,
+        withoutHyphen,
+        withHyphen,
       ),
-      db.select().from(zoneMembers).where(
-        sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${withoutHyphen} OR lower(${zoneMembers.zoneId}) = ${withHyphen}`
+      prisma.$queryRawUnsafe<any[]>(
+        `SELECT user_id FROM zone_members
+         WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
+            OR lower(COALESCE(zone_id, '')) = $2`,
+        withoutHyphen,
+        withHyphen,
       ),
-      db.select().from(hqMembers).where(
-        sql`lower(replace(${hqMembers.hqGroupId}, '-', '')) = ${withoutHyphen} OR lower(${hqMembers.hqGroupId}) = ${withHyphen}`
+      prisma.$queryRawUnsafe<any[]>(
+        `SELECT user_id FROM hq_members
+         WHERE lower(replace(COALESCE(hq_group_id, ''), '-', '')) = $1
+            OR lower(COALESCE(hq_group_id, '')) = $2`,
+        withoutHyphen,
+        withHyphen,
       ),
     ]);
 
     const targetUserIds = new Set<string>([
       ...directProfiles.map(p => p.id),
-      ...zmRows.map(z => z.userId).filter(Boolean),
-      ...hmRows.map(h => h.userId).filter(Boolean),
+      ...zmRows.map(z => z.user_id).filter(Boolean),
+      ...hmRows.map(h => h.user_id).filter(Boolean),
     ]);
 
     if (targetUserIds.size === 0) {
@@ -260,13 +309,13 @@ router.get('/directory', requireAuth, async (req, res) => {
     }
 
     const uniqueIds = Array.from(targetUserIds);
-    const allMatchingProfiles = await db.select().from(profiles).where(inArray(profiles.id, uniqueIds));
+    const allMatchingProfiles = await prisma.profile.findMany({ where: { id: { in: uniqueIds } } });
     res.json({ success: true, data: allMatchingProfiles.map(directoryDto) });
     return;
   }
 
   // A non-HQ caller must always receive only their signed tenant directory.
-  const rows = await db.select().from(profiles);
+  const rows = await prisma.profile.findMany();
   const canViewAllProfiles = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
   if (canViewAllProfiles) {
     res.json({ success: true, data: rows.map(directoryDto) });
@@ -274,10 +323,12 @@ router.get('/directory', requireAuth, async (req, res) => {
   }
 
   const normalizedZone = String(req.tenant?.effectiveZoneId || '').replace(/-/g, '').toLowerCase();
-  const memberships = await db.select().from(zoneMembers).where(
-    sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${normalizedZone}`,
+  const memberships = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT user_id FROM zone_members
+     WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1`,
+    normalizedZone,
   );
-  const allowedIds = new Set(memberships.map((membership) => membership.userId));
+  const allowedIds = new Set(memberships.map((m) => m.user_id));
   res.json({ success: true, data: rows.filter((row) => allowedIds.has(row.id) || row.id === auth.userId).map(directoryDto) });
 });
 
@@ -286,7 +337,7 @@ router.get('/:userId', requireAuth, async (req, res) => {
   const { userId } = req.params;
   const auth = res.locals.auth;
   const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'super_admin';
-  const [profile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+  const profile = await prisma.profile.findUnique({ where: { id: userId } });
   if (!profile) {
     res.status(404).json({ success: false, error: 'Profile not found' });
     return;
@@ -294,10 +345,14 @@ router.get('/:userId', requireAuth, async (req, res) => {
   if (!isHqAdmin && auth.userId !== userId) {
     const zoneId = req.tenant?.effectiveZoneId;
     const normalizedZone = String(zoneId || '').replace(/-/g, '').toLowerCase();
-    const [membership] = await db.select().from(zoneMembers).where(
-      sql`lower(replace(${zoneMembers.zoneId}, '-', '')) = ${normalizedZone} AND ${zoneMembers.userId} = ${userId}`,
-    ).limit(1);
-    if (!membership) {
+    const membership = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM zone_members
+       WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1 AND user_id = $2
+       LIMIT 1`,
+      normalizedZone,
+      userId,
+    );
+    if (membership.length === 0) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
@@ -325,7 +380,7 @@ router.patch('/:userId', requireAuth, async (req, res) => {
     return;
   }
 
-  const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+  const existing = await prisma.profile.findUnique({ where: { id: userId } });
   if (!existing) {
     res.status(404).json({ success: false, error: 'Profile not found' });
     return;
@@ -366,21 +421,16 @@ router.patch('/:userId', requireAuth, async (req, res) => {
   if (body.username !== undefined || body.alias !== undefined) {
     const candidate = String(body.username ?? body.alias ?? '').trim().toLowerCase().replace(/^@/, '');
     if (candidate) {
-      const [taken] = await db
-        .select({ id: profiles.id })
-        .from(profiles)
-        .where(
-          and(
-            ne(profiles.id, userId),
-            or(
-              sql`lower(${profiles.rawData}->>'username') = ${candidate}`,
-              sql`lower(${profiles.rawData}->>'alias') = ${candidate}`
-            )
-          )
-        )
-        .limit(1);
+      const takenRows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT id FROM profiles
+         WHERE id != $1
+           AND (lower(raw_data->>'username') = $2 OR lower(raw_data->>'alias') = $2)
+         LIMIT 1`,
+        userId,
+        candidate,
+      );
 
-      if (taken) {
+      if (takenRows.length > 0) {
         res.status(409).json({ success: false, error: `The username @${candidate} is already in use. Please choose another username.` });
         return;
       }
@@ -414,17 +464,20 @@ router.patch('/:userId', requireAuth, async (req, res) => {
   // If password is provided, hash and update in auth_credentials
   if (body.password) {
     const hashedPassword = await hashPassword(body.password);
-    const [existingCred] = await db.select().from(authCredentials).where(eq(authCredentials.profileId, userId)).limit(1);
+    const existingCred = await prisma.authCredential.findUnique({ where: { profileId: userId } });
     if (existingCred) {
-      await db.update(authCredentials)
-        .set({ passwordHash: hashedPassword, updatedAt: new Date() })
-        .where(eq(authCredentials.profileId, userId));
+      await prisma.authCredential.update({
+        where: { profileId: userId },
+        data: { passwordHash: hashedPassword, updatedAt: new Date() },
+      });
     } else {
-      await db.insert(authCredentials).values({
-        profileId: userId,
-        passwordHash: hashedPassword,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      await prisma.authCredential.create({
+        data: {
+          profileId: userId,
+          passwordHash: hashedPassword,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
       });
     }
   }
@@ -446,11 +499,10 @@ router.patch('/:userId', requireAuth, async (req, res) => {
     updateFields.hasHqAccess = hasHq;
   }
 
-  const [updated] = await db
-    .update(profiles)
-    .set(updateFields)
-    .where(eq(profiles.id, userId))
-    .returning();
+  const updated = await prisma.profile.update({
+    where: { id: userId },
+    data: updateFields,
+  });
 
   broadcast('profile', userId, updated);
   res.json({ success: true, message: 'Profile updated', data: updated });
@@ -478,18 +530,21 @@ router.post('/:userId/password', requireAuth, async (req, res) => {
     }
 
     const hashedPassword = await hashPassword(targetPassword);
-    const [existingCred] = await db.select().from(authCredentials).where(eq(authCredentials.profileId, userId)).limit(1);
+    const existingCred = await prisma.authCredential.findUnique({ where: { profileId: userId } });
 
     if (existingCred) {
-      await db.update(authCredentials)
-        .set({ passwordHash: hashedPassword, updatedAt: new Date() })
-        .where(eq(authCredentials.profileId, userId));
+      await prisma.authCredential.update({
+        where: { profileId: userId },
+        data: { passwordHash: hashedPassword, updatedAt: new Date() },
+      });
     } else {
-      await db.insert(authCredentials).values({
-        profileId: userId,
-        passwordHash: hashedPassword,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      await prisma.authCredential.create({
+        data: {
+          profileId: userId,
+          passwordHash: hashedPassword,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
       });
     }
 
@@ -511,7 +566,7 @@ router.patch('/:userId/role', requireAuth, requireTenantAdmin, async (req, res) 
     }
 
     const { userId } = req.params;
-    const { role } = req.body; // 'member', 'zone_admin', 'hq_admin'
+    const { role } = req.body;
 
     if (!role || !['member', 'zone_admin', 'hq_admin'].includes(role)) {
       res.status(400).json({ success: false, error: 'Invalid role specified' });
@@ -519,14 +574,14 @@ router.patch('/:userId/role', requireAuth, requireTenantAdmin, async (req, res) 
     }
 
     const hasHqAccess = role === 'hq_admin';
-    await db
-      .update(profiles)
-      .set({
+    await prisma.profile.update({
+      where: { id: userId },
+      data: {
         role,
         hasHqAccess,
         updatedAt: new Date().toISOString(),
-      })
-      .where(eq(profiles.id, userId));
+      },
+    });
 
     res.json({ success: true, message: `Role updated to ${role}` });
   } catch (err: any) {
@@ -544,26 +599,31 @@ router.post('/:userId/approve', requireAuth, requireTenantAdmin, async (req, res
       res.status(403).json({ success: false, error: 'Only HQ admins can approve join requests' });
       return;
     }
-    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const existing = await prisma.profile.findUnique({ where: { id: userId } });
     if (!existing) { res.status(404).json({ success: false, error: 'Profile not found' }); return; }
 
     const raw = asRaw(existing.rawData);
     const updatedRaw = { ...raw, pending_hq_approval: false, is_active: true, status: 'active', approved_by: auth.userId, approved_at: new Date().toISOString() };
-    await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
+    await prisma.profile.update({
+      where: { id: userId },
+      data: { rawData: updatedRaw, updatedAt: new Date().toISOString() },
+    });
 
     // Notify user their account is approved
     const notifId = crypto.randomUUID();
-    await db.insert(notifications).values({
-      id: notifId,
-      type: 'join_request_approved',
-      title: '🎉 Your HQ account has been approved',
-      message: 'Your request to join the HQ group has been approved by an admin. You can now log in to the Rehearsal Hub Portal.',
-      category: 'join_request',
-      priority: 'high',
-      targetUserId: userId,
-      senderId: auth.userId,
-      createdAt: new Date().toISOString(),
-      rawData: { type: 'join_request_approved', approvedBy: auth.userId, approvedAt: new Date().toISOString(), status: 'approved', zoneCode: raw.zone_code },
+    await prisma.notification.create({
+      data: {
+        id: notifId,
+        type: 'join_request_approved',
+        title: '🎉 Your HQ account has been approved',
+        message: 'Your request to join the HQ group has been approved by an admin. You can now log in to the Rehearsal Hub Portal.',
+        category: 'join_request',
+        priority: 'high',
+        targetUserId: userId,
+        senderId: auth.userId,
+        createdAt: new Date().toISOString(),
+        rawData: { type: 'join_request_approved', approvedBy: auth.userId, approvedAt: new Date().toISOString(), status: 'approved', zoneCode: raw.zone_code || null } as any,
+      },
     }).catch(() => {});
 
     // Dispatch email notification via Nodemailer
@@ -591,28 +651,33 @@ router.post('/:userId/reject', requireAuth, requireTenantAdmin, async (req, res)
       res.status(403).json({ success: false, error: 'Only HQ admins can reject join requests' });
       return;
     }
-    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const existing = await prisma.profile.findUnique({ where: { id: userId } });
     if (!existing) { res.status(404).json({ success: false, error: 'Profile not found' }); return; }
 
     const { reason } = req.body;
     const raw = asRaw(existing.rawData);
     const updatedRaw = { ...raw, pending_hq_approval: false, is_active: false, rejected: true, rejected_by: auth.userId, rejected_at: new Date().toISOString(), rejection_reason: reason || null };
-    await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
+    await prisma.profile.update({
+      where: { id: userId },
+      data: { rawData: updatedRaw, updatedAt: new Date().toISOString() },
+    });
 
     const notifId = crypto.randomUUID();
-    await db.insert(notifications).values({
-      id: notifId,
-      type: 'join_request_rejected',
-      title: 'HQ Join Request — Not Approved',
-      message: reason
-        ? `Your HQ join request was not approved. Reason: ${reason}`
-        : 'Your request to join the HQ group was not approved at this time. Please contact your zone admin.',
-      category: 'join_request',
-      priority: 'normal',
-      targetUserId: userId,
-      senderId: auth.userId,
-      createdAt: new Date().toISOString(),
-      rawData: { type: 'join_request_rejected', rejectedBy: auth.userId, rejectedAt: new Date().toISOString(), reason: reason || null, status: 'rejected' },
+    await prisma.notification.create({
+      data: {
+        id: notifId,
+        type: 'join_request_rejected',
+        title: 'HQ Join Request — Not Approved',
+        message: reason
+          ? `Your HQ join request was not approved. Reason: ${reason}`
+          : 'Your request to join the HQ group was not approved at this time. Please contact your zone admin.',
+        category: 'join_request',
+        priority: 'normal',
+        targetUserId: userId,
+        senderId: auth.userId,
+        createdAt: new Date().toISOString(),
+        rawData: { type: 'join_request_rejected', rejectedBy: auth.userId, rejectedAt: new Date().toISOString(), reason: reason || null, status: 'rejected' },
+      },
     }).catch(() => {});
 
     res.json({ success: true, message: 'Join request rejected' });
@@ -630,12 +695,15 @@ router.post('/:userId/suspend', requireAuth, async (req, res) => {
     if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
       res.status(403).json({ success: false, error: 'Forbidden' }); return;
     }
-    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const existing = await prisma.profile.findUnique({ where: { id: userId } });
     if (!existing) return res.status(404).json({ success: false, error: 'Profile not found' });
 
     const raw = asRaw(existing.rawData);
     const updatedRaw = { ...raw, status: 'suspended', is_suspended: true, is_active: false, suspended_by: auth.userId, suspended_at: new Date().toISOString() };
-    await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
+    await prisma.profile.update({
+      where: { id: userId },
+      data: { rawData: updatedRaw, updatedAt: new Date().toISOString() },
+    });
 
     res.json({ success: true, message: 'Member account suspended' });
   } catch (err: any) {
@@ -651,12 +719,15 @@ router.post('/:userId/ban', requireAuth, async (req, res) => {
     if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
       res.status(403).json({ success: false, error: 'Forbidden' }); return;
     }
-    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const existing = await prisma.profile.findUnique({ where: { id: userId } });
     if (!existing) return res.status(404).json({ success: false, error: 'Profile not found' });
 
     const raw = asRaw(existing.rawData);
     const updatedRaw = { ...raw, status: 'banned', is_banned: true, is_active: false, banned_by: auth.userId, banned_at: new Date().toISOString() };
-    await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
+    await prisma.profile.update({
+      where: { id: userId },
+      data: { rawData: updatedRaw, updatedAt: new Date().toISOString() },
+    });
 
     res.json({ success: true, message: 'Member banned from platform' });
   } catch (err: any) {
@@ -672,12 +743,15 @@ router.post('/:userId/reactivate', requireAuth, async (req, res) => {
     if (auth.role !== 'hq_admin' && auth.role !== 'admin') {
       res.status(403).json({ success: false, error: 'Forbidden' }); return;
     }
-    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const existing = await prisma.profile.findUnique({ where: { id: userId } });
     if (!existing) return res.status(404).json({ success: false, error: 'Profile not found' });
 
     const raw = asRaw(existing.rawData);
     const updatedRaw = { ...raw, status: 'active', is_banned: false, is_suspended: false, is_active: true, reactivated_by: auth.userId, reactivated_at: new Date().toISOString() };
-    await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
+    await prisma.profile.update({
+      where: { id: userId },
+      data: { rawData: updatedRaw, updatedAt: new Date().toISOString() },
+    });
 
     res.json({ success: true, message: 'Member account reactivated' });
   } catch (err: any) {
@@ -695,12 +769,15 @@ router.post('/:userId/remove-from-zone', requireAuth, async (req, res) => {
     if (!isHqAdmin && !isZoneAdmin) {
       res.status(403).json({ success: false, error: 'Forbidden' }); return;
     }
-    const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const existing = await prisma.profile.findUnique({ where: { id: userId } });
     if (!existing) return res.status(404).json({ success: false, error: 'Profile not found' });
 
     const raw = asRaw(existing.rawData);
     const updatedRaw = { ...raw, zone_code: null, zoneId: null, zoneName: 'Unassigned', removed_from_zone_at: new Date().toISOString() };
-    await db.update(profiles).set({ rawData: updatedRaw, updatedAt: new Date().toISOString() }).where(eq(profiles.id, userId));
+    await prisma.profile.update({
+      where: { id: userId },
+      data: { rawData: updatedRaw, updatedAt: new Date().toISOString() },
+    });
 
     res.json({ success: true, message: 'Member removed from zone' });
   } catch (err: any) {

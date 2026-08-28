@@ -1,19 +1,5 @@
 import { Router } from 'express';
-import { eq, or, asc, desc, sql, inArray } from 'drizzle-orm';
-import { db } from '../db';
-import {
-  ministeredSongs,
-  songs,
-  zoneSongs,
-  subgroupSongs,
-  zonePraiseNights,
-  subgroupPraiseNights,
-  programs,
-  zonePrograms,
-  songHistory,
-  userSongNotes,
-  mediaDoodles,
-} from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
@@ -23,7 +9,9 @@ const router = Router();
 // GET /songs/master & /songs/ministered — ministered songs library
 const getMinisteredSongsHandler = async (_req: any, res: any) => {
   try {
-    const rows = await db.select().from(ministeredSongs).orderBy(asc(ministeredSongs.title));
+    const rows = await prisma.ministeredSong.findMany({
+      orderBy: { title: 'asc' },
+    });
     const merged = rows.map((r) => {
       const m = mergeRawRow(r);
       const raw = (r.rawData && typeof r.rawData === 'object') ? (r.rawData as Record<string, any>) : {};
@@ -56,11 +44,7 @@ router.get('/ministered', requireAuth, getMinisteredSongsHandler);
 
 const getMinisteredSongByIdHandler = async (req: any, res: any) => {
   try {
-    const [song] = await db
-      .select()
-      .from(ministeredSongs)
-      .where(eq(ministeredSongs.id, req.params.id))
-      .limit(1);
+    const song = await prisma.ministeredSong.findUnique({ where: { id: req.params.id } });
     if (!song) {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
@@ -104,11 +88,22 @@ const getSongsHandler = async (req: any, res: any) => {
     let rows: any[] = [];
     if (targetProgramId) {
       const [mainRows, zRows] = await Promise.all([
-        db.select().from(songs).where(
-          sql`${songs.praiseNightId} = ${targetProgramId} OR ${songs.rawData}->>'praiseNightId' = ${targetProgramId} OR ${songs.rawData}->>'programId' = ${targetProgramId} OR lower(${songs.rawData}->>'praise_night_id') = ${targetProgramId.toLowerCase()}`
+        prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM songs
+           WHERE praise_night_id = $1
+              OR raw_data->>'praiseNightId' = $1
+              OR raw_data->>'programId' = $1
+              OR lower(raw_data->>'praise_night_id') = $2`,
+          targetProgramId,
+          targetProgramId.toLowerCase(),
         ),
-        db.select().from(zoneSongs).where(
-          sql`${zoneSongs.rawData}->>'praiseNightId' = ${targetProgramId} OR ${zoneSongs.rawData}->>'programId' = ${targetProgramId} OR lower(${zoneSongs.rawData}->>'praise_night_id') = ${targetProgramId.toLowerCase()}`
+        prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM zone_songs
+           WHERE raw_data->>'praiseNightId' = $1
+              OR raw_data->>'programId' = $1
+              OR lower(raw_data->>'praise_night_id') = $2`,
+          targetProgramId,
+          targetProgramId.toLowerCase(),
         ),
       ]);
       const mergedZ = zRows.map(mergeRawRow);
@@ -118,8 +113,8 @@ const getSongsHandler = async (req: any, res: any) => {
 
       // Fallback: check if the program itself has embedded songs
       if (rows.length === 0) {
-        const [prog] = await db.select().from(programs).where(eq(programs.id, targetProgramId)).limit(1);
-        const [zProg] = !prog ? await db.select().from(zonePrograms).where(eq(zonePrograms.id, targetProgramId)).limit(1) : [null];
+        const prog = await prisma.program.findUnique({ where: { id: targetProgramId } });
+        const zProg = !prog ? await prisma.zoneProgram.findUnique({ where: { id: targetProgramId } }) : null;
         const p = prog || zProg;
         if (p) {
           const raw = mergeRawRow(p);
@@ -135,11 +130,27 @@ const getSongsHandler = async (req: any, res: any) => {
 
       // Find programs belonging to this zone to extract embedded songs & program IDs
       const [zProgs, progs] = await Promise.all([
-        db.select().from(zonePrograms).where(
-          sql`lower(replace(replace(${zonePrograms.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${zonePrograms.zoneId}) = ${cleanZone} OR lower(${zonePrograms.zoneId}) = ${withHyphen} OR lower(replace(replace(${zonePrograms.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zonePrograms.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen}`
+        prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM zone_programs
+           WHERE lower(replace(replace(COALESCE(zone_id, ''), '-', ''), ' ', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+              OR lower(COALESCE(zone_id, '')) = $3
+              OR lower(replace(replace(COALESCE(raw_data->>'zone_code', ''), '-', ''), ' ', '')) = $1
+              OR lower(replace(replace(COALESCE(raw_data->>'zoneId', ''), '-', ''), ' ', '')) = $1`,
+          withoutHyphen,
+          cleanZone,
+          withHyphen,
         ),
-        db.select().from(programs).where(
-          sql`lower(replace(replace(${programs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${programs.zoneId}) = ${cleanZone} OR lower(${programs.zoneId}) = ${withHyphen} OR lower(replace(replace(${programs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${programs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen}`
+        prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM programs
+           WHERE lower(replace(replace(COALESCE(zone_id, ''), '-', ''), ' ', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+              OR lower(COALESCE(zone_id, '')) = $3
+              OR lower(replace(replace(COALESCE(raw_data->>'zone_code', ''), '-', ''), ' ', '')) = $1
+              OR lower(replace(replace(COALESCE(raw_data->>'zoneId', ''), '-', ''), ' ', '')) = $1`,
+          withoutHyphen,
+          cleanZone,
+          withHyphen,
         ),
       ]);
 
@@ -152,11 +163,29 @@ const getSongsHandler = async (req: any, res: any) => {
       });
 
       const [mainRows, zRows] = await Promise.all([
-        db.select().from(songs).where(
-          sql`lower(replace(replace(${songs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${songs.zoneId}) = ${cleanZone} OR lower(${songs.zoneId}) = ${withHyphen} OR lower(replace(replace(${songs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${songs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${songs.rawData}->>'zone_id', '-', ''), ' ', '')) = ${withoutHyphen}`
+        prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM songs
+           WHERE lower(replace(replace(COALESCE(zone_id, ''), '-', ''), ' ', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+              OR lower(COALESCE(zone_id, '')) = $3
+              OR lower(replace(replace(COALESCE(raw_data->>'zone_code', ''), '-', ''), ' ', '')) = $1
+              OR lower(replace(replace(COALESCE(raw_data->>'zoneId', ''), '-', ''), ' ', '')) = $1
+              OR lower(replace(replace(COALESCE(raw_data->>'zone_id', ''), '-', ''), ' ', '')) = $1`,
+          withoutHyphen,
+          cleanZone,
+          withHyphen,
         ),
-        db.select().from(zoneSongs).where(
-          sql`lower(replace(replace(${zoneSongs.zoneId}, '-', ''), ' ', '')) = ${withoutHyphen} OR lower(${zoneSongs.zoneId}) = ${cleanZone} OR lower(${zoneSongs.zoneId}) = ${withHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zone_code', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zoneId', '-', ''), ' ', '')) = ${withoutHyphen} OR lower(replace(replace(${zoneSongs.rawData}->>'zone_id', '-', ''), ' ', '')) = ${withoutHyphen}`
+        prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM zone_songs
+           WHERE lower(replace(replace(COALESCE(zone_id, ''), '-', ''), ' ', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+              OR lower(COALESCE(zone_id, '')) = $3
+              OR lower(replace(replace(COALESCE(raw_data->>'zone_code', ''), '-', ''), ' ', '')) = $1
+              OR lower(replace(replace(COALESCE(raw_data->>'zoneId', ''), '-', ''), ' ', '')) = $1
+              OR lower(replace(replace(COALESCE(raw_data->>'zone_id', ''), '-', ''), ' ', '')) = $1`,
+          withoutHyphen,
+          cleanZone,
+          withHyphen,
         ),
       ]);
 
@@ -171,7 +200,7 @@ const getSongsHandler = async (req: any, res: any) => {
         String(a.title || '').localeCompare(String(b.title || ''))
       );
     } else {
-      rows = await db.select().from(songs).orderBy(asc(songs.title));
+      rows = await prisma.song.findMany({ orderBy: { title: 'asc' } });
     }
 
     res.json({ success: true, count: rows.length, data: rows });
@@ -185,11 +214,7 @@ router.get('/program', requireAuth, getSongsHandler);
 
 const getSongByIdHandler = async (req: any, res: any) => {
   try {
-    const [song] = await db
-      .select()
-      .from(songs)
-      .where(eq(songs.id, req.params.id))
-      .limit(1);
+    const song = await prisma.song.findUnique({ where: { id: req.params.id } });
     if (!song) {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
@@ -206,8 +231,9 @@ router.get('/praise-night/:id', requireAuth, getSongByIdHandler);
 router.get('/zone', requireAuth, async (req, res) => {
   try {
     const { zoneId } = req.query;
-    const songs = await db.select().from(zoneSongs)
-      .where(zoneId ? eq(zoneSongs.zoneId, zoneId as string) : undefined);
+    const songs = await prisma.zoneSong.findMany({
+      where: zoneId ? { zoneId: zoneId as string } : undefined,
+    });
     res.json({ success: true, count: songs.length, data: songs.map(mergeRawRow) });
   } catch (err) {
     console.error('[songs/zone]', err);
@@ -218,7 +244,7 @@ router.get('/zone', requireAuth, async (req, res) => {
 /** GET /songs/zone/:id — existing Supabase zone_songs */
 router.get('/zone/:id', requireAuth, async (req, res) => {
   try {
-    const [song] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, req.params.id)).limit(1);
+    const song = await prisma.zoneSong.findUnique({ where: { id: req.params.id } });
     if (!song) {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
@@ -234,12 +260,17 @@ router.get('/zone/:id', requireAuth, async (req, res) => {
 router.get('/subgroup', requireAuth, async (req, res) => {
   try {
     const { subGroupId, zoneId } = req.query;
-    const songs = await db.select().from(subgroupSongs)
-      .where(
-        subGroupId ? sql`${subgroupSongs.rawData}->>'subGroupId' = ${subGroupId as string} OR ${subgroupSongs.rawData}->>'sub_group_id' = ${subGroupId as string}` :
-        zoneId ? eq(subgroupSongs.zoneId, zoneId as string) :
-        undefined
+    let songs: any[];
+    if (subGroupId) {
+      songs = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM subgroup_songs WHERE raw_data->>'subGroupId' = $1 OR raw_data->>'sub_group_id' = $1`,
+        subGroupId as string,
       );
+    } else if (zoneId) {
+      songs = await prisma.subgroupSong.findMany({ where: { zoneId: zoneId as string } });
+    } else {
+      songs = await prisma.subgroupSong.findMany();
+    }
     res.json({ success: true, count: songs.length, data: songs.map(mergeRawRow) });
   } catch (err) {
     console.error('[songs/subgroup]', err);
@@ -250,11 +281,7 @@ router.get('/subgroup', requireAuth, async (req, res) => {
 /** GET /songs/subgroup/:id — existing Supabase subgroup_songs */
 router.get('/subgroup/:id', requireAuth, async (req, res) => {
   try {
-    const [song] = await db
-      .select()
-      .from(subgroupSongs)
-      .where(eq(subgroupSongs.id, req.params.id))
-      .limit(1);
+    const song = await prisma.subgroupSong.findUnique({ where: { id: req.params.id } });
     if (!song) {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
@@ -270,8 +297,15 @@ router.get('/subgroup/:id', requireAuth, async (req, res) => {
 router.get('/zone-praise-nights', requireAuth, async (req, res) => {
   try {
     const { zoneId } = req.query;
-    const rows = await db.select().from(zonePraiseNights)
-      .where(zoneId ? sql`${zonePraiseNights.rawData}->>'zoneId' = ${zoneId as string} OR ${zonePraiseNights.rawData}->>'zone_id' = ${zoneId as string}` : undefined);
+    let rows: any[];
+    if (zoneId) {
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM zone_programs WHERE raw_data->>'zoneId' = $1 OR raw_data->>'zone_id' = $1`,
+        zoneId as string,
+      );
+    } else {
+      rows = await prisma.zoneProgram.findMany();
+    }
     res.json({ success: true, count: rows.length, data: rows.map(mergeRawRow) });
   } catch (err) {
     console.error('[songs/zone-praise-nights]', err);
@@ -282,11 +316,7 @@ router.get('/zone-praise-nights', requireAuth, async (req, res) => {
 /** GET /songs/zone-praise-nights/:id */
 router.get('/zone-praise-nights/:id', requireAuth, async (req, res) => {
   try {
-    const [row] = await db
-      .select()
-      .from(zonePraiseNights)
-      .where(eq(zonePraiseNights.id, req.params.id))
-      .limit(1);
+    const row = await prisma.zoneProgram.findUnique({ where: { id: req.params.id } });
     if (!row) {
       res.status(404).json({ success: false, error: 'Not found' });
       return;
@@ -302,8 +332,9 @@ router.get('/zone-praise-nights/:id', requireAuth, async (req, res) => {
 router.get('/subgroup-praise-nights', requireAuth, async (req, res) => {
   try {
     const { subGroupId } = req.query;
-    const rows = await db.select().from(subgroupPraiseNights)
-      .where(subGroupId ? eq(subgroupPraiseNights.subGroupId, subGroupId as string) : undefined);
+    const rows = await prisma.subgroupProgram.findMany({
+      where: subGroupId ? { subGroupId: subGroupId as string } : undefined,
+    });
     res.json({ success: true, count: rows.length, data: rows.map(mergeRawRow) });
   } catch (err) {
     console.error('[songs/subgroup-praise-nights]', err);
@@ -314,11 +345,7 @@ router.get('/subgroup-praise-nights', requireAuth, async (req, res) => {
 /** GET /songs/subgroup-praise-nights/:id */
 router.get('/subgroup-praise-nights/:id', requireAuth, async (req, res) => {
   try {
-    const [row] = await db
-      .select()
-      .from(subgroupPraiseNights)
-      .where(eq(subgroupPraiseNights.id, req.params.id))
-      .limit(1);
+    const row = await prisma.subgroupProgram.findUnique({ where: { id: req.params.id } });
     if (!row) {
       res.status(404).json({ success: false, error: 'Not found' });
       return;
@@ -337,8 +364,9 @@ router.get('/notes/:songId', requireAuth, async (req: any, res: any) => {
     const userId = res.locals.auth?.userId;
     if (!userId) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
 
-    const rows = await db.select().from(userSongNotes).where(eq(userSongNotes.songId, songId));
-    const own = rows.find((r: any) => r.userId === userId);
+    const own = await prisma.userSongNote.findFirst({
+      where: { songId, userId },
+    });
     if (own) {
       res.json({ success: true, data: { notes: own.notes, id: own.id } });
     } else {
@@ -354,7 +382,7 @@ router.get('/notes/:songId', requireAuth, async (req: any, res: any) => {
 router.get('/annotations/:songId', requireAuth, async (req: any, res: any) => {
   try {
     const { songId } = req.params;
-    const rows = await db.select().from(mediaDoodles).where(eq(mediaDoodles.songId, songId));
+    const rows = await prisma.mediaDoodle.findMany({ where: { songId } });
     res.json({ success: true, count: rows.length, data: rows });
   } catch (err) {
     console.error('[songs/annotations/:songId:GET]', err);
@@ -374,63 +402,53 @@ router.get('/history', requireAuth, async (req, res) => {
     const sid = typeof songId === 'string' ? songId.trim() : '';
     const stitle = typeof title === 'string' ? title.trim() : '';
 
-    // 1. Fetch from song_history table
-    const whereConditions = [];
-    if (sid) {
-      whereConditions.push(
-        sql`${songHistory.songId} = ${sid} OR ${songHistory.rawData}->>'songId' = ${sid} OR ${songHistory.rawData}->>'song_id' = ${sid} OR ${songHistory.rawData}->>'firebaseId' = ${sid}`
+    let rows: any[] = [];
+    if (sid && stitle) {
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM song_history
+         WHERE song_id = $1 OR raw_data->>'songId' = $1 OR raw_data->>'song_id' = $1 OR raw_data->>'firebaseId' = $1
+            OR lower(title) = lower($2) OR lower(raw_data->>'title') = lower($2) OR lower(raw_data->>'songTitle') = lower($2)
+         ORDER BY created_at DESC`,
+        sid,
+        stitle,
+      );
+    } else if (sid) {
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM song_history
+         WHERE song_id = $1 OR raw_data->>'songId' = $1 OR raw_data->>'song_id' = $1 OR raw_data->>'firebaseId' = $1
+         ORDER BY created_at DESC`,
+        sid,
+      );
+    } else if (stitle) {
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM song_history
+         WHERE lower(title) = lower($1) OR lower(raw_data->>'title') = lower($1) OR lower(raw_data->>'songTitle') = lower($1)
+         ORDER BY created_at DESC`,
+        stitle,
       );
     }
-    if (stitle) {
-      whereConditions.push(
-        sql`lower(${songHistory.title}) = lower(${stitle}) OR lower(${songHistory.rawData}->>'title') = lower(${stitle}) OR lower(${songHistory.rawData}->>'songTitle') = lower(${stitle})`
-      );
-    }
-
-    const rows = await db
-      .select()
-      .from(songHistory)
-      .where(or(...whereConditions))
-      .orderBy(desc(songHistory.createdAt));
 
     const merged = rows.map(mergeRawRow);
 
-    // 2. Also check if the song has an embedded history array in rawData across songs or programs
-    if (merged.length === 0) {
-      const tables = [songs, ministeredSongs, zoneSongs, subgroupSongs];
-      for (const t of tables) {
-        if (sid) {
-          const [song] = await db.select().from(t).where(eq(t.id, sid)).limit(1);
-          if (song) {
-            let history = (song as any).rawData?.history || (song as any).raw_data?.history;
-            if (typeof history === 'string') {
-              try {
-                history = JSON.parse(history);
-              } catch {
-                history = [];
-              }
-            }
-            if (Array.isArray(history) && history.length > 0) {
-              res.json({ success: true, count: history.length, data: history });
-              return;
-            }
+    if (merged.length === 0 && sid) {
+      const song = await prisma.song.findUnique({ where: { id: sid } });
+      const mSong = !song ? await prisma.ministeredSong.findUnique({ where: { id: sid } }) : null;
+      const zSong = !song && !mSong ? await prisma.zoneSong.findUnique({ where: { id: sid } }) : null;
+      const sgSong = !song && !mSong && !zSong ? await prisma.subgroupSong.findUnique({ where: { id: sid } }) : null;
+      const foundSong = song || mSong || zSong || sgSong;
+
+      if (foundSong) {
+        let history = (foundSong as any).rawData?.history || (foundSong as any).raw_data?.history;
+        if (typeof history === 'string') {
+          try {
+            history = JSON.parse(history);
+          } catch {
+            history = [];
           }
         }
-      }
-
-      // Check programs (praise nights) for embedded song history
-      const progRows = await db.select().from(programs);
-      for (const prog of progRows) {
-        const progSongs = Array.isArray(prog.songs) ? prog.songs : (prog.rawData as any)?.songs;
-        if (Array.isArray(progSongs)) {
-          const found = progSongs.find((s: any) =>
-            (sid && (s.id === sid || s.firebaseId === sid || String(s.songId) === sid)) ||
-            (stitle && s.title && s.title.toLowerCase().trim() === stitle.toLowerCase().trim())
-          );
-          if (found && Array.isArray(found.history) && found.history.length > 0) {
-            res.json({ success: true, count: found.history.length, data: found.history });
-            return;
-          }
+        if (Array.isArray(history) && history.length > 0) {
+          res.json({ success: true, count: history.length, data: history });
+          return;
         }
       }
     }
@@ -480,7 +498,7 @@ router.post('/history', requireAuth, async (req: any, res: any) => {
       },
     };
 
-    await db.insert(songHistory).values(row);
+    await prisma.songHistory.create({ data: row });
     res.json({ success: true, data: mergeRawRow(row) });
   } catch (err) {
     console.error('[songs/history POST]', err);
@@ -496,7 +514,7 @@ router.delete('/history/:id', requireAuth, async (req: any, res: any) => {
       res.status(400).json({ success: false, error: 'Missing history id' });
       return;
     }
-    await db.delete(songHistory).where(eq(songHistory.id, id));
+    await prisma.songHistory.delete({ where: { id } });
     res.json({ success: true, message: 'History entry deleted' });
   } catch (err) {
     console.error('[songs/history DELETE]', err);
@@ -514,7 +532,7 @@ const createSongHandler = async (req: any, res: any) => {
 
     const isZoneSpecific = zoneId && zoneId !== 'zone-001' && !zoneId.toLowerCase().includes('hq') && zoneId !== 'ZONE001';
 
-    const songRow = {
+    const songRow: any = {
       id: songId,
       title: body.title || 'Untitled Song',
       key: body.key || null,
@@ -538,22 +556,25 @@ const createSongHandler = async (req: any, res: any) => {
     };
 
     if (isZoneSpecific) {
-      await db.insert(zoneSongs).values({
-        id: songId,
-        title: songRow.title,
-        key: songRow.key,
-        tempo: songRow.tempo,
-        zoneId: songRow.zoneId,
-        status: songRow.status,
-        audioFile: songRow.audioFile,
-        category: body.category || '',
-        rawData: songRow.rawData,
+      await prisma.zoneSong.create({
+        data: {
+          id: songId,
+          title: songRow.title,
+          key: songRow.key,
+          tempo: songRow.tempo,
+          zoneId: songRow.zoneId,
+          status: songRow.status,
+          audioFile: songRow.audioFile,
+          category: body.category || '',
+          rawData: songRow.rawData,
+        },
       });
     }
 
-    await db.insert(songs).values(songRow).onConflictDoUpdate({
-      target: songs.id,
-      set: songRow,
+    await prisma.song.upsert({
+      where: { id: songId },
+      update: songRow,
+      create: songRow,
     });
 
     const mergedCreated = mergeRawRow(songRow);
@@ -579,15 +600,15 @@ const updateSongHandler = async (req: any, res: any) => {
     const songId = req.params.id;
     const body = req.body || {};
 
-    const [existing] = await db.select().from(songs).where(eq(songs.id, songId)).limit(1);
-    const [zExisting] = !existing ? await db.select().from(zoneSongs).where(eq(zoneSongs.id, songId)).limit(1) : [null];
+    const existing = await prisma.song.findUnique({ where: { id: songId } });
+    const zExisting = !existing ? await prisma.zoneSong.findUnique({ where: { id: songId } }) : null;
 
     if (!existing && !zExisting) {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
     }
 
-    const prevRaw = (existing?.rawData || zExisting?.rawData || {}) as Record<string, unknown>;
+    const prevRaw = ((existing?.rawData || zExisting?.rawData || {}) as Record<string, unknown>);
     const updatedRaw = { ...prevRaw, ...body };
 
     const updateFields: Record<string, any> = {
@@ -613,13 +634,13 @@ const updateSongHandler = async (req: any, res: any) => {
     if (body.zoneId !== undefined) updateFields.zoneId = body.zoneId;
 
     if (existing) {
-      await db.update(songs).set(updateFields).where(eq(songs.id, songId));
+      await prisma.song.update({ where: { id: songId }, data: updateFields });
     }
     if (zExisting) {
-      await db.update(zoneSongs).set(updateFields).where(eq(zoneSongs.id, songId));
+      await prisma.zoneSong.update({ where: { id: songId }, data: updateFields });
     }
 
-    const mergedSong = mergeRawRow({ ...(existing || zExisting), ...updateFields, rawData: updatedRaw });
+    const mergedSong = mergeRawRow({ ...(existing || zExisting), ...updateFields, rawData: updatedRaw } as any);
     broadcast('song', songId, mergedSong);
     broadcast('song', 'all', mergedSong);
     const pId = updateFields.praiseNightId || existing?.praiseNightId || (zExisting?.rawData as any)?.praiseNightId;
@@ -648,9 +669,9 @@ const toggleStatusHandler = async (req: any, res: any) => {
       return;
     }
 
-    await Promise.all([
-      db.update(songs).set({ status, updatedAt: new Date() }).where(eq(songs.id, songId)),
-      db.update(zoneSongs).set({ status }).where(eq(zoneSongs.id, songId)),
+    await Promise.allSettled([
+      prisma.song.update({ where: { id: songId }, data: { status, updatedAt: new Date() } }),
+      prisma.zoneSong.update({ where: { id: songId }, data: { status } }),
     ]);
 
     broadcast('song', songId, { id: songId, status });
@@ -672,16 +693,17 @@ const toggleActiveHandler = async (req: any, res: any) => {
     const songId = req.params.id;
     const { isActive, praiseNightId } = req.body;
 
-    // If activating a song, optionally deactivate other songs in the same program
     if (isActive && praiseNightId) {
-      await db.update(songs)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(eq(songs.praiseNightId, praiseNightId));
+      await prisma.song.updateMany({
+        where: { praiseNightId },
+        data: { isActive: false, updatedAt: new Date() },
+      });
     }
 
-    await db.update(songs)
-      .set({ isActive: Boolean(isActive), updatedAt: new Date() })
-      .where(eq(songs.id, songId));
+    await prisma.song.update({
+      where: { id: songId },
+      data: { isActive: Boolean(isActive), updatedAt: new Date() },
+    });
 
     broadcast('song', songId, { id: songId, isActive: Boolean(isActive) });
     broadcast('song', 'all', { id: songId, isActive: Boolean(isActive) });
@@ -701,10 +723,10 @@ const deleteSongHandler = async (req: any, res: any) => {
   try {
     const songId = req.params.id;
 
-    await Promise.all([
-      db.delete(songs).where(eq(songs.id, songId)),
-      db.delete(zoneSongs).where(eq(zoneSongs.id, songId)),
-      db.delete(subgroupSongs).where(eq(subgroupSongs.id, songId)),
+    await Promise.allSettled([
+      prisma.song.deleteMany({ where: { id: songId } }),
+      prisma.zoneSong.deleteMany({ where: { id: songId } }),
+      prisma.subgroupSong.deleteMany({ where: { id: songId } }),
     ]);
 
     broadcast('song', songId, { id: songId, deleted: true });
@@ -752,7 +774,7 @@ router.post('/master', requireAuth, requireTenantAdmin, async (req, res) => {
       rawData: { ...body, id: songId },
     };
 
-    await db.insert(ministeredSongs).values(row);
+    await prisma.ministeredSong.create({ data: row });
     res.status(201).json({ success: true, message: 'Master song created', data: row });
   } catch (err) {
     console.error('[songs/master POST]', err);
@@ -765,7 +787,7 @@ router.patch('/master/:id', requireAuth, requireTenantAdmin, async (req, res) =>
     const songId = req.params.id;
     const body = req.body || {};
 
-    const [existing] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, songId)).limit(1);
+    const existing = await prisma.ministeredSong.findUnique({ where: { id: songId } });
     if (!existing) {
       res.status(404).json({ success: false, error: 'Master song not found' });
       return;
@@ -795,7 +817,7 @@ router.patch('/master/:id', requireAuth, requireTenantAdmin, async (req, res) =>
     if (body.categories !== undefined) updateFields.categories = body.categories;
     if (body.customParts !== undefined || body.custom_parts !== undefined) updateFields.customParts = body.customParts || body.custom_parts;
 
-    await db.update(ministeredSongs).set(updateFields).where(eq(ministeredSongs.id, songId));
+    await prisma.ministeredSong.update({ where: { id: songId }, data: updateFields });
     res.json({ success: true, message: 'Master song updated', data: { id: songId, ...updateFields } });
   } catch (err) {
     console.error('[songs/master PATCH]', err);
@@ -806,7 +828,7 @@ router.patch('/master/:id', requireAuth, requireTenantAdmin, async (req, res) =>
 router.delete('/master/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const songId = req.params.id;
-    await db.delete(ministeredSongs).where(eq(ministeredSongs.id, songId));
+    await prisma.ministeredSong.delete({ where: { id: songId } });
     res.json({ success: true, message: 'Master song deleted' });
   } catch (err) {
     console.error('[songs/master DELETE]', err);
@@ -820,7 +842,7 @@ router.post('/praise-night/:id/duplicate', requireAuth, requireTenantAdmin, asyn
     const songId = req.params.id;
     const { targetProgramId, targetPraiseNightId, zoneId } = req.body || {};
 
-    const [existing] = await db.select().from(songs).where(eq(songs.id, songId)).limit(1);
+    const existing = await prisma.song.findUnique({ where: { id: songId } });
     if (!existing) {
       res.status(404).json({ success: false, error: 'Song not found' });
       return;
@@ -849,7 +871,7 @@ router.post('/praise-night/:id/duplicate', requireAuth, requireTenantAdmin, asyn
       },
     };
 
-    await db.insert(songs).values(duplicateRow);
+    await prisma.song.create({ data: duplicateRow as any });
     res.status(201).json({
       success: true,
       message: 'Song duplicated successfully',
@@ -866,13 +888,13 @@ router.get('/:id/lyrics', requireAuth, async (req: any, res: any) => {
   try {
     const { id } = req.params;
 
-    let [song] = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    let song = await prisma.song.findUnique({ where: { id } });
     if (!song) {
-      const [mSong] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, id)).limit(1);
+      const mSong = await prisma.ministeredSong.findUnique({ where: { id } });
       if (mSong) song = mSong as any;
     }
     if (!song) {
-      const [zSong] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, id)).limit(1);
+      const zSong = await prisma.zoneSong.findUnique({ where: { id } });
       if (zSong) song = zSong as any;
     }
 
@@ -914,7 +936,7 @@ router.patch('/:id/lyrics', requireAuth, async (req: any, res: any) => {
     let updated = false;
 
     // 1. Try songs table
-    const [song] = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    const song = await prisma.song.findUnique({ where: { id } });
     if (song) {
       const rawData = (song.rawData as Record<string, any>) || {};
       const updatedRaw = {
@@ -929,12 +951,12 @@ router.patch('/:id/lyrics', requireAuth, async (req: any, res: any) => {
       const setFields: any = { rawData: updatedRaw };
       if (lyrics !== undefined) setFields.lyrics = lyrics;
 
-      await db.update(songs).set(setFields).where(eq(songs.id, id));
+      await prisma.song.update({ where: { id }, data: setFields });
       updated = true;
     }
 
     // 2. Try ministeredSongs table
-    const [mSong] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, id)).limit(1);
+    const mSong = await prisma.ministeredSong.findUnique({ where: { id } });
     if (mSong) {
       const rawData = (mSong.rawData as Record<string, any>) || {};
       const updatedRaw = {
@@ -949,12 +971,12 @@ router.patch('/:id/lyrics', requireAuth, async (req: any, res: any) => {
       const setFields: any = { rawData: updatedRaw };
       if (lyrics !== undefined) setFields.lyrics = lyrics;
 
-      await db.update(ministeredSongs).set(setFields).where(eq(ministeredSongs.id, id));
+      await prisma.ministeredSong.update({ where: { id }, data: setFields });
       updated = true;
     }
 
     // 3. Try zoneSongs table
-    const [zSong] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, id)).limit(1);
+    const zSong = await prisma.zoneSong.findUnique({ where: { id } });
     if (zSong) {
       const rawData = (zSong.rawData as Record<string, any>) || {};
       const updatedRaw = {
@@ -966,7 +988,7 @@ router.patch('/:id/lyrics', requireAuth, async (req: any, res: any) => {
         lyricsUpdatedAt: now,
       };
 
-      await db.update(zoneSongs).set({ rawData: updatedRaw }).where(eq(zoneSongs.id, id));
+      await prisma.zoneSong.update({ where: { id }, data: { rawData: updatedRaw } });
       updated = true;
     }
 
@@ -995,19 +1017,19 @@ router.get('/:id', requireAuth, async (req: any, res: any) => {
   try {
     const { id } = req.params;
 
-    const [song] = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    const song = await prisma.song.findUnique({ where: { id } });
     if (song) {
       res.json({ success: true, data: mergeRawRow(song) });
       return;
     }
 
-    const [mSong] = await db.select().from(ministeredSongs).where(eq(ministeredSongs.id, id)).limit(1);
+    const mSong = await prisma.ministeredSong.findUnique({ where: { id } });
     if (mSong) {
       res.json({ success: true, data: mergeRawRow(mSong) });
       return;
     }
 
-    const [zSong] = await db.select().from(zoneSongs).where(eq(zoneSongs.id, id)).limit(1);
+    const zSong = await prisma.zoneSong.findUnique({ where: { id } });
     if (zSong) {
       res.json({ success: true, data: mergeRawRow(zSong) });
       return;
@@ -1030,10 +1052,9 @@ router.post('/import-from-ministered', requireAuth, requireTenantAdmin, async (r
       return;
     }
 
-    const ministeredList = await db
-      .select()
-      .from(ministeredSongs)
-      .where(inArray(ministeredSongs.id, songIds));
+    const ministeredList = await prisma.ministeredSong.findMany({
+      where: { id: { in: songIds } },
+    });
 
     const isHq = auth.role === 'hq_admin' || auth.isHq;
     const zoneId = auth.effectiveZoneId || auth.zoneId || 'hq';
@@ -1063,30 +1084,34 @@ router.post('/import-from-ministered', requireAuth, requireTenantAdmin, async (r
       raw.audioUrl = m.audioFile || raw.audioUrl || '';
 
       if (isHq) {
-        await db.insert(songs).values({
-          id: newId,
-          title: m.title || 'Untitled Song',
-          writer: m.writer || '',
-          category: m.category || 'Praise Night',
-          key: m.key || '',
-          tempo: m.tempo || '',
-          lyrics: m.lyrics || '',
-          audioFile: m.audioFile || '',
-          audioUrls: m.audioUrls || {},
-          praiseNightId: praiseId,
-          zoneId: 'hq',
-          rawData: raw,
+        await prisma.song.create({
+          data: {
+            id: newId,
+            title: m.title || 'Untitled Song',
+            writer: m.writer || '',
+            category: m.category || 'Praise Night',
+            key: m.key || '',
+            tempo: m.tempo || '',
+            lyrics: m.lyrics || '',
+            audioFile: m.audioFile || '',
+            audioUrls: m.audioUrls || {},
+            praiseNightId: praiseId,
+            zoneId: 'hq',
+            rawData: raw,
+          },
         });
       } else {
-        await db.insert(zoneSongs).values({
-          id: newId,
-          title: m.title || 'Untitled Song',
-          category: m.category || 'Praise Night',
-          key: m.key || '',
-          tempo: m.tempo || '',
-          audioFile: m.audioFile || '',
-          zoneId,
-          rawData: raw,
+        await prisma.zoneSong.create({
+          data: {
+            id: newId,
+            title: m.title || 'Untitled Song',
+            category: m.category || 'Praise Night',
+            key: m.key || '',
+            tempo: m.tempo || '',
+            audioFile: m.audioFile || '',
+            zoneId,
+            rawData: raw,
+          },
         });
       }
       importedCount++;
@@ -1104,5 +1129,3 @@ router.post('/import-from-ministered', requireAuth, requireTenantAdmin, async (r
 });
 
 export default router;
-
-

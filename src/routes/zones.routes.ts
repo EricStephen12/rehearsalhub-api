@@ -1,24 +1,19 @@
 import { Router } from 'express';
-import { eq } from 'drizzle-orm';
-import { db } from '../db';
-import { zones, zoneMembers } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 
 const router = Router();
 
 // GET /zones
 router.get('/', requireAuth, async (_req, res) => {
-  const rows = await db.select().from(zones);
+  const rows = await prisma.zone.findMany();
   res.json({ success: true, data: rows });
 });
 
 // GET /zones/:zoneId
 router.get('/:zoneId', requireAuth, async (req, res) => {
-  const [zone] = await db.select().from(zones).where(eq(zones.id, req.params.zoneId)).limit(1);
-  if (!zone) {
-    res.status(404).json({ success: false, error: 'Zone not found' });
-    return;
-  }
+  const zone = await prisma.zone.findUnique({ where: { id: req.params.zoneId } });
+  if (!zone) return res.status(404).json({ success: false, error: 'Zone not found' });
   res.json({ success: true, data: zone });
 });
 
@@ -29,15 +24,11 @@ router.get('/:zoneId/members', requireAuth, async (req, res) => {
   const isHqAdmin = role === 'hq_admin' || role === 'admin' || role === 'super_admin';
   const requestedZoneId = String(req.params.zoneId || '').trim().toLowerCase();
   const authZoneId = String(auth?.zoneId || '').trim().toLowerCase();
-  const normalizedRequestedZoneId = requestedZoneId.replace(/-/g, '');
-  const normalizedAuthZoneId = authZoneId.replace(/-/g, '');
-
-  if (!isHqAdmin && (!authZoneId || normalizedRequestedZoneId !== normalizedAuthZoneId)) {
-    res.status(403).json({ success: false, error: 'Forbidden' });
-    return;
+  const norm = (s: string) => s.replace(/-/g, '');
+  if (!isHqAdmin && (!authZoneId || norm(requestedZoneId) !== norm(authZoneId))) {
+    return res.status(403).json({ success: false, error: 'Forbidden' });
   }
-
-  const members = await db.select().from(zoneMembers).where(eq(zoneMembers.zoneId, req.params.zoneId));
+  const members = await prisma.zoneMember.findMany({ where: { zoneId: req.params.zoneId } });
   res.json({ success: true, data: members });
 });
 

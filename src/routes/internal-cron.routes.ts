@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { db } from '../db';
-import { notifications, profiles, upcomingEvents } from '../schema';
+import prisma from '../lib/prisma';
 import { mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
@@ -13,7 +12,7 @@ function isoDateAfter(days: number): string {
 }
 
 function rawObject(value: unknown): Record<string, any> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, any>) : {};
 }
 
 router.post('/daily-reminders', async (req, res) => {
@@ -27,8 +26,8 @@ router.post('/daily-reminders', async (req, res) => {
   try {
     const targetDate = isoDateAfter(1);
     const [eventRows, profileRows] = await Promise.all([
-      db.select().from(upcomingEvents),
-      db.select().from(profiles),
+      prisma.upcomingEvent.findMany(),
+      prisma.profile.findMany(),
     ]);
 
     const events = eventRows
@@ -69,7 +68,13 @@ router.post('/daily-reminders', async (req, res) => {
     }
 
     if (records.length > 0) {
-      await db.insert(notifications).values(records).onConflictDoNothing();
+      for (const record of records) {
+        await prisma.notification.upsert({
+          where: { id: record.id },
+          update: {},
+          create: record,
+        });
+      }
     }
     res.json({ success: true, targetDate, generatedCount: records.length });
   } catch (err) {

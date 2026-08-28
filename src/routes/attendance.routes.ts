@@ -1,8 +1,6 @@
 import { Router } from 'express';
-import { eq, desc, and, sql } from 'drizzle-orm';
 import crypto from 'crypto';
-import { db } from '../db';
-import { attendance, profiles, settings } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
@@ -63,24 +61,27 @@ router.get('/', requireAuth, async (req: any, res) => {
 
     let rows: any[] = [];
     if (effectiveChurchId) {
-      rows = await db.select().from(attendance).where(
-        sql`${attendance.rawData}->>'subGroupId' = ${String(effectiveChurchId)} OR
-            ${attendance.rawData}->>'sub_group_id' = ${String(effectiveChurchId)}`
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM attendance WHERE raw_data->>'subGroupId' = $1 OR raw_data->>'sub_group_id' = $1`,
+        String(effectiveChurchId),
       );
     } else if (effectiveZoneId && effectiveZoneId !== 'all') {
       const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
       const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
 
-      rows = await db.select().from(attendance).where(
-        sql`lower(replace(${attendance.zoneId}, '-', '')) = ${withoutHyphen} OR 
-            lower(${attendance.zoneId}) = ${withHyphen} OR
-            lower(replace(${attendance.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR
-            lower(replace(${attendance.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR
-            lower(${attendance.rawData}->>'zoneId') = ${withHyphen} OR
-            lower(${attendance.rawData}->>'zone_id') = ${withHyphen}`
+      rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM attendance
+         WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
+            OR lower(COALESCE(zone_id, '')) = $2
+            OR lower(replace(COALESCE(raw_data->>'zoneId', ''), '-', '')) = $1
+            OR lower(replace(COALESCE(raw_data->>'zone_id', ''), '-', '')) = $1
+            OR lower(COALESCE(raw_data->>'zoneId', '')) = $2
+            OR lower(COALESCE(raw_data->>'zone_id', '')) = $2`,
+        withoutHyphen,
+        withHyphen,
       );
     } else {
-      rows = await db.select().from(attendance);
+      rows = await prisma.attendance.findMany();
     }
 
     let data = rows.map(shapeAttendance);
@@ -101,7 +102,7 @@ router.get('/', requireAuth, async (req: any, res) => {
 router.get('/mine', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
-    const rows = await db.select().from(attendance).where(eq(attendance.userId, userId));
+    const rows = await prisma.attendance.findMany({ where: { userId } });
     const data = rows.map(shapeAttendance).sort((a, b) => String(b.checkInTime ?? '').localeCompare(String(a.checkInTime ?? '')));
     res.json({ success: true, count: data.length, data });
   } catch (err) {
@@ -120,7 +121,7 @@ const handleCheckIn = async (req: any, res: any) => {
       res.status(400).json({ success: false, error: 'Attendance id is too long' });
       return;
     }
-    const [alreadyRecorded] = await db.select().from(attendance).where(eq(attendance.id, id)).limit(1);
+    const alreadyRecorded = await prisma.attendance.findUnique({ where: { id } });
     if (alreadyRecorded) {
       const existingRaw = (alreadyRecorded.rawData && typeof alreadyRecorded.rawData === 'object')
         ? alreadyRecorded.rawData as Record<string, any>
@@ -139,18 +140,19 @@ const handleCheckIn = async (req: any, res: any) => {
     const qrCode = String(req.body.qrCode || req.body.qr_code || '').trim();
     let targetUserId = req.body.userId || auth.userId;
     if (qrCode) {
-      const [qrProfile] = await db.select().from(profiles).where(
-        sql`${profiles.rawData}->>'qrCode' = ${qrCode} OR
-            ${profiles.rawData}->>'qr_code' = ${qrCode} OR
-            ${profiles.id} = ${qrCode}`
-      ).limit(1);
+      const qrProfileRows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM profiles
+         WHERE raw_data->>'qrCode' = $1 OR raw_data->>'qr_code' = $1 OR id = $1 LIMIT 1`,
+        qrCode,
+      );
+      const qrProfile = qrProfileRows[0];
       if (!qrProfile) {
         res.status(404).json({ success: false, error: 'Singer QR code was not found.' });
         return;
       }
       targetUserId = qrProfile.id;
     }
-    const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, targetUserId)).limit(1);
+    const userProfile = await prisma.profile.findUnique({ where: { id: targetUserId } });
     if (!userProfile) {
       res.status(404).json({ success: false, error: 'Singer profile was not found.' });
       return;
@@ -191,17 +193,19 @@ const handleCheckIn = async (req: any, res: any) => {
       createdAt: now,
     };
 
-    const [inserted] = await db.insert(attendance).values({
-      id,
-      userId: targetUserId,
-      userName: fullName,
-      eventName,
-      status: 'present',
-      zoneId,
-      checkInTime: now,
-      recordedByAdminId: auth.userId,
-      rawData,
-    }).returning();
+    const inserted = await prisma.attendance.create({
+      data: {
+        id,
+        userId: targetUserId,
+        userName: fullName,
+        eventName,
+        status: 'present',
+        zoneId,
+        checkInTime: now,
+        recordedByAdminId: auth.userId,
+        rawData,
+      },
+    });
 
     res.status(201).json({ success: true, message: 'Checked in successfully', data: shapeAttendance(inserted) });
   } catch (err: any) {
@@ -222,12 +226,10 @@ router.post('/check-out', requireAuth, async (req: any, res) => {
 
     let existing: any = null;
     if (attendanceId) {
-      const [r] = await db.select().from(attendance).where(eq(attendance.id, attendanceId)).limit(1);
-      existing = r;
+      existing = await prisma.attendance.findUnique({ where: { id: attendanceId } });
     } else {
-      // Find latest check-in for user today
       const today = new Date().toLocaleDateString('en-CA');
-      const rows = await db.select().from(attendance).where(eq(attendance.userId, auth.userId));
+      const rows = await prisma.attendance.findMany({ where: { userId: auth.userId } });
       existing = rows.find((r: any) => {
         const shaped = shapeAttendance(r);
         return shaped.dateString === today && !shaped.checkOutTime;
@@ -246,10 +248,10 @@ router.post('/check-out', requireAuth, async (req: any, res) => {
       status: 'completed',
     };
 
-    const [updated] = await db.update(attendance)
-      .set({ status: 'completed', rawData: updatedRaw })
-      .where(eq(attendance.id, existing.id))
-      .returning();
+    const updated = await prisma.attendance.update({
+      where: { id: existing.id },
+      data: { status: 'completed', rawData: updatedRaw },
+    });
 
     res.json({ success: true, message: 'Checked out successfully', data: shapeAttendance(updated) });
   } catch (err: any) {
@@ -294,17 +296,19 @@ router.post('/manual', requireAuth, requireTenantAdmin, async (req: any, res) =>
       createdAt: now,
     };
 
-    const [inserted] = await db.insert(attendance).values({
-      id,
-      userId: rawData.userId,
-      userName,
-      eventName,
-      status,
-      zoneId,
-      checkInTime: status === 'present' ? now : null,
-      recordedByAdminId: auth.userId,
-      rawData,
-    }).returning();
+    const inserted = await prisma.attendance.create({
+      data: {
+        id,
+        userId: rawData.userId,
+        userName,
+        eventName,
+        status,
+        zoneId,
+        checkInTime: status === 'present' ? now : null,
+        recordedByAdminId: auth.userId,
+        rawData,
+      },
+    });
 
     res.status(201).json({ success: true, message: 'Manual attendance recorded', data: shapeAttendance(inserted) });
   } catch (err: any) {
@@ -319,7 +323,7 @@ router.patch('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
     const { id } = req.params;
     const { eventName, event_name, status, userName, user_name, checkInTime, check_in_time, checkOutTime, check_out_time, isArchived, is_archived } = req.body;
 
-    const [existing] = await db.select().from(attendance).where(eq(attendance.id, id)).limit(1);
+    const existing = await prisma.attendance.findUnique({ where: { id } });
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Attendance record not found' });
     }
@@ -348,15 +352,15 @@ router.patch('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    const [updated] = await db.update(attendance)
-      .set({
+    const updated = await prisma.attendance.update({
+      where: { id },
+      data: {
         eventName: updatedEvent,
         userName: updatedUser,
         status: updatedStatus,
         rawData: updatedRaw,
-      })
-      .where(eq(attendance.id, id))
-      .returning();
+      },
+    });
 
     res.json({ success: true, message: 'Attendance record updated', data: shapeAttendance(updated) });
   } catch (err) {
@@ -369,7 +373,7 @@ router.patch('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
 router.delete('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
-    await db.delete(attendance).where(eq(attendance.id, id));
+    await prisma.attendance.delete({ where: { id } });
     res.json({ success: true, message: 'Attendance record deleted' });
   } catch (err) {
     console.error('[attendance:delete]', err);
@@ -378,4 +382,3 @@ router.delete('/:id', requireAuth, requireTenantAdmin, async (req: any, res) => 
 });
 
 export default router;
-

@@ -1,11 +1,6 @@
 import { Router } from 'express';
-import { eq, sql, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
-import {
-  subgroups, subgroupMembers, subgroupSongs, subgroupPraiseNights,
-  notifications, profiles, ministeredSongs,
-} from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth, requireTenantAdmin } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 
@@ -28,7 +23,7 @@ function canAccessSubgroup(req: any, row: any): boolean {
   return !tenant?.effectiveChurchId || row.id === tenant.effectiveChurchId;
 }
 
-function shapeSubgroup(row: typeof subgroups.$inferSelect) {
+function shapeSubgroup(row: any) {
   const merged = mergeRawRow(row);
   const memberIds = Array.isArray(merged.memberIds)
     ? merged.memberIds
@@ -62,18 +57,17 @@ function shapeSubgroup(row: typeof subgroups.$inferSelect) {
 router.get('/mine', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
-    const rows = await db
-      .select()
-      .from(subgroups)
-      .where(
-        sql`${subgroups.coordinatorId} = ${userId}
-            OR ${subgroups.createdBy} = ${userId}
-            OR ${subgroups.rawData}->>'coordinatorId' = ${userId}
-            OR ${subgroups.rawData}->>'coordinator_id' = ${userId}
-            OR ${subgroups.rawData}->>'createdBy' = ${userId}
-            OR (${subgroups.rawData}::jsonb -> 'memberIds') ? ${userId}
-            OR (${subgroups.rawData}::jsonb -> 'member_ids') ? ${userId}`,
-      );
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM subgroups
+       WHERE coordinator_id = $1
+          OR created_by = $1
+          OR raw_data->>'coordinatorId' = $1
+          OR raw_data->>'coordinator_id' = $1
+          OR raw_data->>'createdBy' = $1
+          OR (raw_data::jsonb -> 'memberIds') ? $1
+          OR (raw_data::jsonb -> 'member_ids') ? $1`,
+      userId,
+    );
     res.json({ success: true, data: rows.map(shapeSubgroup) });
   } catch (err) {
     console.error('[subgroups/mine]', err);
@@ -85,24 +79,22 @@ router.get('/mine', requireAuth, async (_req, res) => {
 router.get('/member-rehearsals', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
-    const sgs = await db
-      .select({ id: subgroups.id })
-      .from(subgroups)
-      .where(
-        sql`${subgroups.coordinatorId} = ${userId}
-            OR ${subgroups.createdBy} = ${userId}
-            OR (${subgroups.rawData}::jsonb -> 'memberIds') ? ${userId}
-            OR (${subgroups.rawData}::jsonb -> 'member_ids') ? ${userId}`
-      );
+    const sgs = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT id FROM subgroups
+       WHERE coordinator_id = $1
+          OR created_by = $1
+          OR (raw_data::jsonb -> 'memberIds') ? $1
+          OR (raw_data::jsonb -> 'member_ids') ? $1`,
+      userId,
+    );
     if (sgs.length === 0) {
       res.json({ success: true, data: [] });
       return;
     }
     const sgIds = sgs.map(sg => sg.id);
-    const rows = await db
-      .select()
-      .from(subgroupPraiseNights)
-      .where(inArray(subgroupPraiseNights.subGroupId, sgIds));
+    const rows = await prisma.subgroupProgram.findMany({
+      where: { subGroupId: { in: sgIds } },
+    });
     res.json({ success: true, data: rows.map(mergeRawRow) });
   } catch (err) {
     console.error('[subgroups/member-rehearsals]', err);
@@ -114,16 +106,15 @@ router.get('/member-rehearsals', requireAuth, async (_req, res) => {
 router.get('/coordinated', requireAuth, async (_req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
-    const rows = await db
-      .select()
-      .from(subgroups)
-      .where(
-        sql`${subgroups.coordinatorId} = ${userId}
-            OR ${subgroups.createdBy} = ${userId}
-            OR ${subgroups.rawData}->>'coordinatorId' = ${userId}
-            OR ${subgroups.rawData}->>'coordinator_id' = ${userId}
-            OR ${subgroups.rawData}->>'createdBy' = ${userId}`,
-      );
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM subgroups
+       WHERE coordinator_id = $1
+          OR created_by = $1
+          OR raw_data->>'coordinatorId' = $1
+          OR raw_data->>'coordinator_id' = $1
+          OR raw_data->>'createdBy' = $1`,
+      userId,
+    );
     const data = rows.map(shapeSubgroup);
     res.json({ success: true, data });
   } catch (err) {
@@ -139,7 +130,7 @@ router.get('/:id/songs', requireAuth, async (req, res) => {
       res.status(400).json({ success: false, error: 'Invalid id' });
       return;
     }
-    const [subgroup] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
+    const subgroup = await prisma.subgroup.findUnique({ where: { id: parsed.data } });
     if (!subgroup) {
       res.status(404).json({ success: false, error: 'Subgroup not found' });
       return;
@@ -148,13 +139,12 @@ router.get('/:id/songs', requireAuth, async (req, res) => {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
-    const rows = await db
-      .select()
-      .from(subgroupSongs)
-      .where(
-        sql`${subgroupSongs.rawData}->>'subGroupId' = ${parsed.data}
-            OR ${subgroupSongs.rawData}->>'sub_group_id' = ${parsed.data}`,
-      );
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM subgroup_songs
+       WHERE raw_data->>'subGroupId' = $1
+          OR raw_data->>'sub_group_id' = $1`,
+      parsed.data,
+    );
     res.json({
       success: true,
       data: rows.map((row) => mergeRawRow(row)),
@@ -172,7 +162,7 @@ router.get('/:id/praise-nights', requireAuth, async (req, res) => {
       res.status(400).json({ success: false, error: 'Invalid id' });
       return;
     }
-    const [subgroup] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
+    const subgroup = await prisma.subgroup.findUnique({ where: { id: parsed.data } });
     if (!subgroup) {
       res.status(404).json({ success: false, error: 'Subgroup not found' });
       return;
@@ -181,13 +171,12 @@ router.get('/:id/praise-nights', requireAuth, async (req, res) => {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
-    const rows = await db
-      .select()
-      .from(subgroupPraiseNights)
-      .where(eq(subgroupPraiseNights.subGroupId, parsed.data));
+    const rows = await prisma.subgroupProgram.findMany({
+      where: { subGroupId: parsed.data },
+    });
     res.json({
       success: true,
-      data: rows.map((row) => mergeRawRow(row)),
+      data: rows.map((row: any) => mergeRawRow(row)),
     });
   } catch (err) {
     console.error('[subgroups/:id/praise-nights]', err);
@@ -209,24 +198,30 @@ router.get('/', requireAuth, async (req: any, res) => {
       const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
 
       if (isHqAdmin) {
-        rows = await db.select().from(subgroups).where(
-          sql`lower(replace(${subgroups.zoneId}, '-', '')) = ${withoutHyphen} OR 
-              lower(${subgroups.zoneId}) = ${withHyphen} OR 
-              lower(replace(${subgroups.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
-              lower(replace(${subgroups.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR
-              ${subgroups.status} = 'pending' OR
-              ${subgroups.rawData}->>'status' = 'pending'`
+        rows = await prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM subgroups
+           WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+              OR lower(replace(COALESCE(raw_data->>'zoneId', ''), '-', '')) = $1
+              OR lower(replace(COALESCE(raw_data->>'zone_id', ''), '-', '')) = $1
+              OR status = 'pending'
+              OR raw_data->>'status' = 'pending'`,
+          withoutHyphen,
+          withHyphen,
         );
       } else {
-        rows = await db.select().from(subgroups).where(
-          sql`lower(replace(${subgroups.zoneId}, '-', '')) = ${withoutHyphen} OR 
-              lower(${subgroups.zoneId}) = ${withHyphen} OR 
-              lower(replace(${subgroups.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
-              lower(replace(${subgroups.rawData}->>'zone_id', '-', '')) = ${withoutHyphen}`
+        rows = await prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM subgroups
+           WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+              OR lower(replace(COALESCE(raw_data->>'zoneId', ''), '-', '')) = $1
+              OR lower(replace(COALESCE(raw_data->>'zone_id', ''), '-', '')) = $1`,
+          withoutHyphen,
+          withHyphen,
         );
       }
     } else {
-      rows = await db.select().from(subgroups);
+      rows = await prisma.subgroup.findMany();
     }
 
     res.json({ success: true, data: rows.map(shapeSubgroup) });
@@ -254,7 +249,7 @@ const handleCreateSubgroup = async (req: any, res: any) => {
       zoneId = auth.zoneId || 'global',
       estimatedMembers = 10,
       memberIds = [userId],
-      status: requestedStatus
+      status: requestedStatus,
     } = req.body || {};
 
     if (!name || !name.trim()) {
@@ -262,7 +257,6 @@ const handleCreateSubgroup = async (req: any, res: any) => {
       return;
     }
 
-    // Admins can create active units directly, regular members start as pending
     const finalStatus = (isHqAdmin || isZoneAdmin) ? (requestedStatus || 'active') : 'pending';
     const subgroupId = `sg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -282,50 +276,54 @@ const handleCreateSubgroup = async (req: any, res: any) => {
       createdAt: new Date().toISOString(),
     };
 
-    await db.insert(subgroups).values({
-      id: subgroupId,
-      name: name.trim(),
-      zoneId: zoneId || 'global',
-      description: description.trim(),
-      type,
-      status: finalStatus,
-      coordinatorId: coordinatorId || userId,
-      coordinatorName: coordinatorName.trim() || auth.email || 'Coordinator',
-      createdBy: userId,
-      rawData,
+    await prisma.subgroup.create({
+      data: {
+        id: subgroupId,
+        name: name.trim(),
+        zoneId: zoneId || 'global',
+        description: description.trim(),
+        type,
+        status: finalStatus,
+        coordinatorId: coordinatorId || userId,
+        coordinatorName: coordinatorName.trim() || auth.email || 'Coordinator',
+        createdBy: userId,
+        rawData,
+      },
     });
 
-    // 1. Notify Admins if request is pending review
     if (finalStatus === 'pending') {
       const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      await db.insert(notifications).values({
-        id: notifId,
-        title: 'New Church Approval Request',
-        message: `${rawData.coordinatorName} requested to register "${name.trim()}" in ${zoneId}.`,
-        type: 'church_request',
-        targetAudience: 'hq_admin',
-        zoneId: zoneId || 'global',
-        createdAt: new Date().toISOString(),
-        rawData: {
-          subgroupId,
-          requesterId: userId,
+      await prisma.notification.create({
+        data: {
+          id: notifId,
+          title: 'New Church Approval Request',
+          message: `${rawData.coordinatorName} requested to register "${name.trim()}" in ${zoneId}.`,
           type: 'church_request',
-          link: '/admin?section=Churches',
+          targetAudience: 'hq_admin',
+          zoneId: zoneId || 'global',
+          createdAt: new Date().toISOString(),
+          rawData: {
+            subgroupId,
+            requesterId: userId,
+            type: 'church_request',
+            link: '/admin?section=Churches',
+          },
         },
       }).catch(err => console.error('[subgroups] Admin notif error:', err));
 
-      // 2. Notify the User that their request was received
       const userNotifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      await db.insert(notifications).values({
-        id: userNotifId,
-        title: 'Church Request Submitted',
-        message: `Your request to register "${name.trim()}" has been received and is pending admin approval.`,
-        type: 'church_request',
-        targetUserId: userId,
-        createdAt: new Date().toISOString(),
-        rawData: {
-          subgroupId,
-          status: 'pending',
+      await prisma.notification.create({
+        data: {
+          id: userNotifId,
+          title: 'Church Request Submitted',
+          message: `Your request to register "${name.trim()}" has been received and is pending admin approval.`,
+          type: 'church_request',
+          targetUserId: userId,
+          createdAt: new Date().toISOString(),
+          rawData: {
+            subgroupId,
+            status: 'pending',
+          },
         },
       }).catch(err => console.error('[subgroups] User notif error:', err));
     }
@@ -358,7 +356,7 @@ router.post('/requests', requireAuth, handleCreateSubgroup);
 router.post('/:id/approve', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
+    const row = await prisma.subgroup.findUnique({ where: { id } });
     if (!row) {
       res.status(404).json({ success: false, error: 'Church not found' });
       return;
@@ -369,23 +367,27 @@ router.post('/:id/approve', requireAuth, requireTenantAdmin, async (req, res) =>
       : {}) as Record<string, any>;
     raw.status = 'active';
 
-    await db.update(subgroups).set({
-      status: 'active',
-      rawData: raw,
-    }).where(eq(subgroups.id, id));
+    await prisma.subgroup.update({
+      where: { id },
+      data: {
+        status: 'active',
+        rawData: raw,
+      },
+    });
 
-    // Send confirmation notification to the requester / coordinator
     const targetUser = raw.coordinatorId || raw.createdBy;
     if (targetUser) {
       const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      await db.insert(notifications).values({
-        id: notifId,
-        title: 'Church Approved 🎉',
-        message: `Your church "${row.name || raw.name}" has been approved by admin!`,
-        type: 'church_approved',
-        targetUserId: targetUser,
-        createdAt: new Date().toISOString(),
-        rawData: { subgroupId: id, status: 'active' },
+      await prisma.notification.create({
+        data: {
+          id: notifId,
+          title: 'Church Approved 🎉',
+          message: `Your church "${row.name || raw.name}" has been approved by admin!`,
+          type: 'church_approved',
+          targetUserId: targetUser,
+          createdAt: new Date().toISOString(),
+          rawData: { subgroupId: id, status: 'active' },
+        },
       }).catch(err => console.error('[subgroups/approve] notif error:', err));
     }
 
@@ -400,7 +402,7 @@ router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req, res) => 
   try {
     const { id } = req.params;
     const { reason } = req.body || {};
-    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
+    const row = await prisma.subgroup.findUnique({ where: { id } });
     if (!row) {
       res.status(404).json({ success: false, error: 'Church not found' });
       return;
@@ -412,23 +414,27 @@ router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req, res) => 
     raw.status = 'rejected';
     raw.rejectReason = reason || 'Request rejected by admin';
 
-    await db.update(subgroups).set({
-      status: 'rejected',
-      rawData: raw,
-    }).where(eq(subgroups.id, id));
+    await prisma.subgroup.update({
+      where: { id },
+      data: {
+        status: 'rejected',
+        rawData: raw,
+      },
+    });
 
-    // Send rejection notification to the requester / coordinator
     const targetUser = raw.coordinatorId || raw.createdBy;
     if (targetUser) {
       const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      await db.insert(notifications).values({
-        id: notifId,
-        title: 'Church Request Update',
-        message: `Your request for "${row.name || raw.name}" was not approved: ${reason || 'Declined by admin'}`,
-        type: 'church_rejected',
-        targetUserId: targetUser,
-        createdAt: new Date().toISOString(),
-        rawData: { subgroupId: id, status: 'rejected', reason },
+      await prisma.notification.create({
+        data: {
+          id: notifId,
+          title: 'Church Request Update',
+          message: `Your request for "${row.name || raw.name}" was not approved: ${reason || 'Declined by admin'}`,
+          type: 'church_rejected',
+          targetUserId: targetUser,
+          createdAt: new Date().toISOString(),
+          rawData: { subgroupId: id, status: 'rejected', reason },
+        },
       }).catch(err => console.error('[subgroups/reject] notif error:', err));
     }
 
@@ -439,14 +445,12 @@ router.post('/:id/reject', requireAuth, requireTenantAdmin, async (req, res) => 
   }
 });
 
-// ── Subgroup CRUD ─────────────────────────────────────────────────────────────
-
 /** PATCH /subgroups/:id — update name, description, or status */
 router.patch('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const { id } = req.params;
-    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
+    const row = await prisma.subgroup.findUnique({ where: { id } });
     if (!row) { res.status(404).json({ success: false, error: 'Not found' }); return; }
 
     const raw = (row.rawData && typeof row.rawData === 'object' && !Array.isArray(row.rawData)
@@ -463,7 +467,10 @@ router.patch('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
     if (status !== undefined && isAdmin) { updateFields.status = status; raw.status = status; }
     updateFields.rawData = raw;
 
-    const [updated] = await db.update(subgroups).set(updateFields).where(eq(subgroups.id, id)).returning();
+    const updated = await prisma.subgroup.update({
+      where: { id },
+      data: updateFields,
+    });
     res.json({ success: true, data: shapeSubgroup(updated as any) });
   } catch (err: any) {
     console.error('[subgroups/:id PATCH]', err);
@@ -476,7 +483,7 @@ router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const auth = res.locals.auth;
     const { id } = req.params;
-    const [row] = await db.select().from(subgroups).where(eq(subgroups.id, id)).limit(1);
+    const row = await prisma.subgroup.findUnique({ where: { id } });
     if (!row) { res.status(404).json({ success: false, error: 'Not found' }); return; }
 
     const raw = (row.rawData && typeof row.rawData === 'object' ? row.rawData : {}) as Record<string, any>;
@@ -484,9 +491,8 @@ router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
     const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
     if (!isCoordinator && !isAdmin) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
 
-    // Remove all member rows first
-    await db.delete(subgroupMembers).where(eq(subgroupMembers.subgroupId, id));
-    await db.delete(subgroups).where(eq(subgroups.id, id));
+    await prisma.subgroupMember.deleteMany({ where: { subgroupId: id } });
+    await prisma.subgroup.delete({ where: { id } });
     res.json({ success: true, message: 'Subgroup deleted' });
   } catch (err: any) {
     console.error('[subgroups/:id DELETE]', err);
@@ -494,38 +500,30 @@ router.delete('/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   }
 });
 
-// ── Subgroup Members (dedicated table) ────────────────────────────────────────
-
 /** GET /subgroups/:id/members — list members with profile data */
 router.get('/:id/members', requireAuth, async (req, res) => {
   try {
     const parsed = idSchema.safeParse(req.params.id);
     if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid id' }); return; }
 
-    const [subgroup] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
+    const subgroup = await prisma.subgroup.findUnique({ where: { id: parsed.data } });
     if (!subgroup) { res.status(404).json({ success: false, error: 'Subgroup not found' }); return; }
     if (!canAccessSubgroup(req, subgroup)) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
 
-    // Prefer new subgroup_members table; fall back to rawData memberIds for legacy subgroups
-    const memberRows = await db
-      .select()
-      .from(subgroupMembers)
-      .where(eq(subgroupMembers.subgroupId, parsed.data));
+    const memberRows = await prisma.subgroupMember.findMany({
+      where: { subgroupId: parsed.data },
+    });
 
     let userIds: string[] = memberRows.filter(m => m.status === 'active').map(m => m.userId);
 
-    // Backward compat: if no rows in table yet, read from rawData
     if (userIds.length === 0) {
-      const [sg] = await db.select().from(subgroups).where(eq(subgroups.id, parsed.data)).limit(1);
-      if (sg) {
-        const raw = (sg.rawData && typeof sg.rawData === 'object' ? sg.rawData : {}) as Record<string, any>;
-        userIds = Array.isArray(raw.memberIds) ? raw.memberIds : Array.isArray(raw.member_ids) ? raw.member_ids : [];
-      }
+      const raw = (subgroup.rawData && typeof subgroup.rawData === 'object' ? subgroup.rawData : {}) as Record<string, any>;
+      userIds = Array.isArray(raw.memberIds) ? raw.memberIds : Array.isArray(raw.member_ids) ? raw.member_ids : [];
     }
 
     if (userIds.length === 0) { res.json({ success: true, data: [] }); return; }
 
-    const profileRows = await db.select().from(profiles).where(inArray(profiles.id, userIds));
+    const profileRows = await prisma.profile.findMany({ where: { id: { in: userIds } } });
     const profileMap = new Map(profileRows.map(p => [p.id, p]));
 
     const data = memberRows.length > 0
@@ -554,22 +552,17 @@ router.post('/members', requireAuth, requireTenantAdmin, async (req, res) => {
 
     const { subGroupId, userId, role, addedBy } = parsed.data;
 
-    // Verify subgroup exists
-    const [sg] = await db.select().from(subgroups).where(eq(subgroups.id, subGroupId)).limit(1);
+    const sg = await prisma.subgroup.findUnique({ where: { id: subGroupId } });
     if (!sg) { res.status(404).json({ success: false, error: 'Subgroup not found' }); return; }
 
-    // Check caller is coordinator or admin
     const raw = (sg.rawData && typeof sg.rawData === 'object' ? sg.rawData : {}) as Record<string, any>;
     const isCoordinator = raw.coordinatorId === auth.userId || raw.coordinator_id === auth.userId || sg.coordinatorId === auth.userId;
     const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
     if (!isCoordinator && !isAdmin) { res.status(403).json({ success: false, error: 'Only coordinators can add members' }); return; }
 
-    // Idempotent — don't re-add if already active
-    const [existing] = await db
-      .select()
-      .from(subgroupMembers)
-      .where(sql`${subgroupMembers.subgroupId} = ${subGroupId} AND ${subgroupMembers.userId} = ${userId}`)
-      .limit(1);
+    const existing = await prisma.subgroupMember.findFirst({
+      where: { subgroupId: subGroupId, userId },
+    });
 
     if (existing && existing.status === 'active') {
       res.json({ success: true, message: 'Already a member', data: existing });
@@ -579,50 +572,46 @@ router.post('/members', requireAuth, requireTenantAdmin, async (req, res) => {
     const memberId = `sgm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     let memberRow;
     if (existing) {
-      // Re-activate if previously removed
-      [memberRow] = await db
-        .update(subgroupMembers)
-        .set({ status: 'active', role, addedBy: addedBy || auth.userId, joinedAt: new Date() })
-        .where(eq(subgroupMembers.id, existing.id))
-        .returning();
+      memberRow = await prisma.subgroupMember.update({
+        where: { id: existing.id },
+        data: { status: 'active', role, addedBy: addedBy || auth.userId, joinedAt: new Date() },
+      });
     } else {
-      [memberRow] = await db
-        .insert(subgroupMembers)
-        .values({
+      memberRow = await prisma.subgroupMember.create({
+        data: {
           id: memberId,
           subgroupId: subGroupId,
           userId,
           role,
           status: 'active',
           addedBy: addedBy || auth.userId,
-        })
-        .returning();
+        },
+      });
     }
 
-    // Also keep rawData.memberIds in sync for backward compat
     const memberIds: string[] = Array.isArray(raw.memberIds) ? raw.memberIds
       : Array.isArray(raw.member_ids) ? raw.member_ids : [];
     if (!memberIds.includes(userId)) {
       raw.memberIds = [...memberIds, userId];
-      await db.update(subgroups).set({ rawData: raw }).where(eq(subgroups.id, subGroupId));
+      await prisma.subgroup.update({ where: { id: subGroupId }, data: { rawData: raw } });
     }
 
-    // Get coordinator's name for the notification
-    const [coordinatorProfile] = await db.select().from(profiles).where(eq(profiles.id, auth.userId)).limit(1);
+    const coordinatorProfile = await prisma.profile.findUnique({ where: { id: auth.userId } });
     const coordinatorName = coordinatorProfile
       ? [coordinatorProfile.firstName, coordinatorProfile.lastName].filter(Boolean).join(' ') || 'Your coordinator'
       : 'Your coordinator';
 
-    // Send in-app notification to the added user
     const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    await db.insert(notifications).values({
-      id: notifId,
-      title: 'Added to Subgroup 🎵',
-      message: `${coordinatorName} added you to "${sg.name || raw.name || 'a subgroup'}". You now have access to its rehearsal songs and setlists.`,
-      type: 'subgroup_added',
-      targetUserId: userId,
-      createdAt: new Date().toISOString(),
-      rawData: { subgroupId: subGroupId, subgroupName: sg.name || raw.name, addedBy: auth.userId },
+    await prisma.notification.create({
+      data: {
+        id: notifId,
+        title: 'Added to Subgroup 🎵',
+        message: `${coordinatorName} added you to "${sg.name || raw.name || 'a subgroup'}". You now have access to its rehearsal songs and setlists.`,
+        type: 'subgroup_added',
+        targetUserId: userId,
+        createdAt: new Date().toISOString(),
+        rawData: { subgroupId: subGroupId, subgroupName: sg.name || raw.name, addedBy: auth.userId },
+      },
     }).catch(err => console.error('[subgroups/members] notif error:', err));
 
     res.status(201).json({ success: true, message: 'Member added successfully', data: memberRow });
@@ -639,25 +628,23 @@ router.delete('/members', requireAuth, async (req, res) => {
     const { subGroupId, userId } = req.query as { subGroupId?: string; userId?: string };
     if (!subGroupId || !userId) { res.status(400).json({ success: false, error: 'subGroupId and userId are required' }); return; }
 
-    const [sg] = await db.select().from(subgroups).where(eq(subgroups.id, subGroupId)).limit(1);
+    const sg = await prisma.subgroup.findUnique({ where: { id: subGroupId } });
     if (!sg) { res.status(404).json({ success: false, error: 'Subgroup not found' }); return; }
 
     const raw = (sg.rawData && typeof sg.rawData === 'object' ? sg.rawData : {}) as Record<string, any>;
     const isCoordinator = raw.coordinatorId === auth.userId || sg.coordinatorId === auth.userId;
     const isAdmin = auth.role === 'hq_admin' || auth.role === 'admin' || auth.role === 'zone_admin';
-    const isSelf = auth.userId === userId; // allow self-removal
+    const isSelf = auth.userId === userId;
     if (!isCoordinator && !isAdmin && !isSelf) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
 
-    // Soft-delete from subgroup_members
-    await db
-      .update(subgroupMembers)
-      .set({ status: 'removed' })
-      .where(sql`${subgroupMembers.subgroupId} = ${subGroupId} AND ${subgroupMembers.userId} = ${userId}`);
+    await prisma.subgroupMember.updateMany({
+      where: { subgroupId: subGroupId, userId },
+      data: { status: 'removed' },
+    });
 
-    // Keep rawData in sync
     const memberIds: string[] = Array.isArray(raw.memberIds) ? raw.memberIds : [];
     raw.memberIds = memberIds.filter((id: string) => id !== userId);
-    await db.update(subgroups).set({ rawData: raw }).where(eq(subgroups.id, subGroupId));
+    await prisma.subgroup.update({ where: { id: subGroupId }, data: { rawData: raw } });
 
     res.json({ success: true, message: 'Member removed' });
   } catch (err: any) {
@@ -665,8 +652,6 @@ router.delete('/members', requireAuth, async (req, res) => {
     res.status(500).json({ success: false, error: err?.message || 'Failed to remove member' });
   }
 });
-
-// ── Praise Nights / Setlists ──────────────────────────────────────────────────
 
 /** POST /subgroups/praise-nights — create a new rehearsal setlist */
 router.post('/praise-nights', requireAuth, requireTenantAdmin, async (req, res) => {
@@ -677,16 +662,18 @@ router.post('/praise-nights', requireAuth, requireTenantAdmin, async (req, res) 
       return;
     }
     const id = `sgpn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const [row] = await db.insert(subgroupPraiseNights).values({
-      id,
-      name: name.trim(),
-      date: date || '',
-      location: location || '',
-      category,
-      subGroupId,
-      songIds: [],
-      rawData: { subGroupId, name, date, location, category },
-    }).returning();
+    const row = await prisma.subgroupProgram.create({
+      data: {
+        id,
+        name: name.trim(),
+        date: date || '',
+        location: location || '',
+        category,
+        subGroupId,
+        songIds: [],
+        rawData: { subGroupId, name, date, location, category },
+      },
+    });
     res.status(201).json({ success: true, data: mergeRawRow(row) });
   } catch (err: any) {
     console.error('[subgroups/praise-nights POST]', err);
@@ -698,7 +685,7 @@ router.post('/praise-nights', requireAuth, requireTenantAdmin, async (req, res) 
 router.patch('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const [row] = await db.select().from(subgroupPraiseNights).where(eq(subgroupPraiseNights.id, id)).limit(1);
+    const row = await prisma.subgroupProgram.findUnique({ where: { id } });
     if (!row) { res.status(404).json({ success: false, error: 'Setlist not found' }); return; }
 
     const { name, date, location, category, songIds } = req.body || {};
@@ -712,8 +699,9 @@ router.patch('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, 
       ...(songIds !== undefined ? { songIds } : {}),
     };
 
-    const [updated] = await db.update(subgroupPraiseNights)
-      .set({
+    const updated = await prisma.subgroupProgram.update({
+      where: { id },
+      data: {
         ...(name !== undefined ? { name: name.trim() } : {}),
         ...(date !== undefined ? { date } : {}),
         ...(location !== undefined ? { location } : {}),
@@ -721,9 +709,8 @@ router.patch('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, 
         ...(songIds !== undefined ? { songIds } : {}),
         updatedAt: new Date(),
         rawData: nextRaw,
-      })
-      .where(eq(subgroupPraiseNights.id, id))
-      .returning();
+      },
+    });
 
     res.json({ success: true, data: mergeRawRow(updated as any) });
   } catch (err: any) {
@@ -736,15 +723,13 @@ router.patch('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, 
 router.delete('/praise-nights/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    await db.delete(subgroupPraiseNights).where(eq(subgroupPraiseNights.id, id));
+    await prisma.subgroupProgram.delete({ where: { id } });
     res.json({ success: true, message: 'Setlist deleted' });
   } catch (err: any) {
     console.error('[subgroups/praise-nights/:id DELETE]', err);
     res.status(500).json({ success: false, error: err?.message || 'Failed to delete setlist' });
   }
 });
-
-// ── Subgroup Songs ────────────────────────────────────────────────────────────
 
 /** POST /subgroups/songs/import — import song(s) from All Ministered / Master catalog into subgroup */
 router.post('/songs/import', requireAuth, requireTenantAdmin, async (req, res) => {
@@ -760,10 +745,9 @@ router.post('/songs/import', requireAuth, requireTenantAdmin, async (req, res) =
       return;
     }
 
-    const masterRows = await db
-      .select()
-      .from(ministeredSongs)
-      .where(inArray(ministeredSongs.id, ids));
+    const masterRows = await prisma.ministeredSong.findMany({
+      where: { id: { in: ids } },
+    });
 
     if (masterRows.length === 0) {
       res.status(404).json({ success: false, error: 'Master song(s) not found' });
@@ -791,34 +775,36 @@ router.post('/songs/import', requireAuth, requireTenantAdmin, async (req, res) =
         importedBy: auth.userId,
       };
 
-      const [row] = await db.insert(subgroupSongs).values({
-        id: songId,
-        title: String((mData as any).title || 'Untitled Song').trim(),
-        key: String((mData as any).key || ''),
-        tempo: String((mData as any).tempo || ''),
-        zoneId: zoneId || (mData as any).zoneId || '',
-        status: 'active',
-        rawData,
-      }).returning();
+      const row = await prisma.subgroupSong.create({
+        data: {
+          id: songId,
+          title: String((mData as any).title || 'Untitled Song').trim(),
+          key: String((mData as any).key || ''),
+          tempo: String((mData as any).tempo || ''),
+          zoneId: zoneId || (mData as any).zoneId || '',
+          status: 'active',
+          rawData,
+        },
+      });
 
       importedSongs.push(mergeRawRow(row));
       insertedIds.push(songId);
     }
 
-    // If praiseNightId provided, add newly inserted song IDs into the setlist
     if (praiseNightId && insertedIds.length > 0) {
-      const [pn] = await db.select().from(subgroupPraiseNights).where(eq(subgroupPraiseNights.id, praiseNightId)).limit(1);
+      const pn = await prisma.subgroupProgram.findUnique({ where: { id: praiseNightId } });
       if (pn) {
         const rawPn = (pn.rawData && typeof pn.rawData === 'object' ? pn.rawData : {}) as Record<string, any>;
-        const currentSongIds = Array.isArray(pn.songIds) ? pn.songIds : Array.isArray(rawPn.songIds) ? rawPn.songIds : [];
+        const currentSongIds = Array.isArray(pn.songIds) ? pn.songIds as string[] : Array.isArray(rawPn.songIds) ? rawPn.songIds as string[] : [];
         const nextSongIds = Array.from(new Set([...currentSongIds, ...insertedIds]));
-        await db.update(subgroupPraiseNights)
-          .set({
+        await prisma.subgroupProgram.update({
+          where: { id: praiseNightId },
+          data: {
             songIds: nextSongIds,
             updatedAt: new Date(),
             rawData: { ...rawPn, songIds: nextSongIds },
-          })
-          .where(eq(subgroupPraiseNights.id, praiseNightId));
+          },
+        });
       }
     }
 
@@ -834,7 +820,7 @@ router.post('/songs', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const {
       title, key, tempo, writer, leadSinger, lyrics, solfa, notation, solfas,
-      audioFile, audioUrls, category, categories, subGroupId, zoneId, comments, history, conductorGuide
+      audioFile, audioUrls, category, categories, subGroupId, zoneId, comments, history, conductorGuide,
     } = req.body || {};
     if (!subGroupId || !title?.trim()) {
       res.status(400).json({ success: false, error: 'subGroupId and title are required' });
@@ -863,15 +849,17 @@ router.post('/songs', requireAuth, requireTenantAdmin, async (req, res) => {
       rehearsalStatus: 'unheard',
       createdAt: new Date().toISOString(),
     };
-    const [row] = await db.insert(subgroupSongs).values({
-      id,
-      title: title.trim(),
-      key: key || '',
-      tempo: tempo || '',
-      zoneId: zoneId || '',
-      status: 'active',
-      rawData,
-    }).returning();
+    const row = await prisma.subgroupSong.create({
+      data: {
+        id,
+        title: title.trim(),
+        key: key || '',
+        tempo: tempo || '',
+        zoneId: zoneId || '',
+        status: 'active',
+        rawData,
+      },
+    });
     res.status(201).json({ success: true, data: mergeRawRow(row) });
   } catch (err: any) {
     console.error('[subgroups/songs POST]', err);
@@ -879,17 +867,17 @@ router.post('/songs', requireAuth, requireTenantAdmin, async (req, res) => {
   }
 });
 
-/** PATCH /subgroups/songs/:id — update all subgroup song fields including comments, status, history */
+/** PATCH /subgroups/songs/:id — update all subgroup song fields */
 router.patch('/songs/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const [row] = await db.select().from(subgroupSongs).where(eq(subgroupSongs.id, id)).limit(1);
+    const row = await prisma.subgroupSong.findUnique({ where: { id } });
     if (!row) { res.status(404).json({ success: false, error: 'Song not found' }); return; }
 
     const {
       title, key, tempo, writer, leadSinger, lyrics, solfa, notation, solfas,
       audioFile, audioUrls, category, categories, status, rehearsalStatus, isActive,
-      comments, history, conductorGuide, customParts
+      comments, history, conductorGuide, customParts,
     } = req.body || {};
 
     const prevRaw = (row.rawData && typeof row.rawData === 'object' ? row.rawData : {}) as Record<string, any>;
@@ -918,16 +906,16 @@ router.patch('/songs/:id', requireAuth, requireTenantAdmin, async (req, res) => 
       updatedAt: new Date().toISOString(),
     };
 
-    const [updated] = await db.update(subgroupSongs)
-      .set({
+    const updated = await prisma.subgroupSong.update({
+      where: { id },
+      data: {
         ...(title !== undefined ? { title: title.trim() } : {}),
         ...(key !== undefined ? { key } : {}),
         ...(tempo !== undefined ? { tempo } : {}),
         ...(status !== undefined ? { status } : {}),
         rawData: nextRaw,
-      })
-      .where(eq(subgroupSongs.id, id))
-      .returning();
+      },
+    });
 
     res.json({ success: true, data: mergeRawRow(updated as any) });
   } catch (err: any) {
@@ -940,7 +928,7 @@ router.patch('/songs/:id', requireAuth, requireTenantAdmin, async (req, res) => 
 router.delete('/songs/:id', requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    await db.delete(subgroupSongs).where(eq(subgroupSongs.id, id));
+    await prisma.subgroupSong.delete({ where: { id } });
     res.json({ success: true, message: 'Song deleted' });
   } catch (err: any) {
     console.error('[subgroups/songs/:id DELETE]', err);

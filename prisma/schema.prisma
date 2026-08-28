@@ -1,0 +1,744 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// 1. SONGS & REPERTOIRE
+// ============================================================================
+
+model MinisteredSong {
+  id               String    @id
+  title            String?
+  key              String?
+  tempo            String?
+  lyrics           String?
+  writer           String?
+  solfa            String?
+  category         String?
+  imageUrl         String?   @map("image_url")
+  audioFile        String?   @map("audio_file")
+  audioUrls        Json?     @map("audio_urls")
+  conductor        String?
+  leadSinger       String?   @map("lead_singer")
+  drummer          String?
+  bassGuitarist    String?   @map("bass_guitarist")
+  leadKeyboardist  String?   @map("lead_keyboardist")
+  categories       Json?
+  customParts      Json?     @map("custom_parts")
+  publishedAt      DateTime? @map("published_at")
+  publishedBy      String?   @map("published_by")
+  publishedByName  String?   @map("published_by_name")
+  updatedAt        DateTime? @updatedAt @map("updated_at")
+  sourceType       String?   @map("source_type")
+  isHqOnly         Boolean?  @map("is_hq_only")
+  rawData          Json?     @map("raw_data")
+
+  @@map("ministered_songs")
+}
+
+model Song {
+  id           String    @id
+  title        String?
+  key          String?
+  tempo        String?
+  lyrics       String?
+  writer       String?
+  category     String?
+  audioFile    String?   @map("audio_file")
+  audioUrls    Json?     @map("audio_urls")
+  conductor    String?
+  leadSinger   String?   @map("lead_singer")
+  drummer      String?
+  zoneId       String?   @map("zone_id")
+  praiseNightId String?  @map("praise_night_id")
+  status       String?
+  isActive     Boolean?  @map("is_active")
+  categories   Json?
+  createdAt    String?   @map("created_at")
+  updatedAt    DateTime? @updatedAt @map("updated_at")
+  rawData      Json?     @map("raw_data")
+
+  @@map("songs")
+}
+
+model ZoneSong {
+  id        String  @id
+  title     String?
+  key       String?
+  tempo     String?
+  zoneId    String? @map("zone_id")
+  status    String?
+  audioFile String? @map("audio_file")
+  category  String?
+  rawData   Json?   @map("raw_data")
+
+  @@map("zone_songs")
+}
+
+model SubgroupSong {
+  id      String  @id
+  title   String?
+  key     String?
+  tempo   String?
+  zoneId  String? @map("zone_id")
+  status  String?
+  rawData Json?   @map("raw_data")
+
+  @@map("subgroup_songs")
+}
+
+model Program {
+  id          String    @id
+  name        String?
+  date        String?
+  scope       String?
+  zoneId      String?   @map("zone_id")
+  category    String?
+  status      String?   @default("pre-rehearsal")
+  isActive    Boolean?  @default(false) @map("is_active")
+  isArchived  Boolean?  @default(false) @map("is_archived")
+  location    String?
+  bannerImage String?   @map("banner_image")
+  songs       Json?
+  songIds     Json?     @map("song_ids")
+  createdAt   DateTime? @default(now()) @map("created_at")
+  updatedAt   DateTime? @updatedAt @map("updated_at")
+  rawData     Json?     @map("raw_data")
+
+  @@map("programs")
+}
+
+model SubgroupProgram {
+  id            String    @id
+  name          String?
+  date          String?
+  location      String?
+  zoneId        String?   @map("zone_id")
+  subGroupId    String?   @map("sub_group_id")
+  subGroupName  String?   @map("sub_group_name")
+  category      String?
+  status        String?   @default("pre-rehearsal")
+  isActive      Boolean?  @default(false) @map("is_active")
+  isArchived    Boolean?  @default(false) @map("is_archived")
+  songIds       Json?     @map("song_ids")
+  createdAt     DateTime? @default(now()) @map("created_at")
+  updatedAt     DateTime? @updatedAt @map("updated_at")
+  rawData       Json?     @map("raw_data")
+
+  @@map("subgroup_programs")
+}
+
+model ZoneProgram {
+  id          String    @id
+  name        String?
+  date        String?
+  zoneId      String?   @map("zone_id")
+  category    String?
+  status      String?   @default("pre-rehearsal")
+  isActive    Boolean?  @default(false) @map("is_active")
+  isArchived  Boolean?  @default(false) @map("is_archived")
+  location    String?
+  bannerImage String?   @map("banner_image")
+  songs       Json?
+  songIds     Json?     @map("song_ids")
+  createdAt   DateTime? @default(now()) @map("created_at")
+  updatedAt   DateTime? @updatedAt @map("updated_at")
+  rawData     Json?     @map("raw_data")
+
+  @@map("zone_programs")
+}
+
+// ============================================================================
+// 2. USERS, PROFILES & MEMBERSHIP
+// ============================================================================
+
+model Profile {
+  id               String    @id
+  email            String?
+  firstName        String?   @map("first_name")
+  lastName         String?   @map("last_name")
+  role             String?
+  hasHqAccess      Boolean?  @map("has_hq_access")
+  avatarUrl        String?   @map("avatar_url")
+  createdAt        DateTime? @map("created_at")
+  rawData          Json?     @map("raw_data")
+  kingschatId      String?   @map("kingschat_id")
+  profileCompleted Boolean?  @map("profile_completed")
+  updatedAt        String?   @map("updated_at")
+
+  authCredential   AuthCredential?
+  refreshTokens    RefreshToken[]
+
+  @@map("profiles")
+}
+
+model AuthCredential {
+  profileId    String   @id @map("profile_id")
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime? @map("updated_at")
+  profile      Profile  @relation(fields: [profileId], references: [id])
+
+  @@map("auth_credentials")
+}
+
+model RefreshToken {
+  id        String   @id
+  profileId String   @map("user_id")
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId], name: "refresh_tokens_user_id_idx")
+  @@map("refresh_tokens")
+}
+
+// ============================================================================
+// 3. ZONES & SUBGROUPS
+// ============================================================================
+
+model Zone {
+  id                 String    @id
+  name               String?
+  slug               String?
+  region             String?
+  invitationCode     String?   @map("invitation_code")
+  themeColor         String?   @map("theme_color")
+  memberCount        Int?      @default(0) @map("member_count")
+  maxMembers         Int?      @default(20) @map("max_members")
+  subscriptionTier   String?   @default("free") @map("subscription_tier")
+  subscriptionStatus String?   @default("active") @map("subscription_status")
+  createdAt          DateTime? @default(now()) @map("created_at")
+  updatedAt          DateTime? @updatedAt @map("updated_at")
+  rawData            Json?     @map("raw_data")
+
+  members            ZoneMember[]
+
+  @@map("zones")
+}
+
+model ZoneMember {
+  id        String    @id
+  zoneId    String    @map("zone_id")
+  userId    String    @map("user_id")
+  role      String?   @default("member")
+  status    String?   @default("active")
+  invitedBy String?   @map("invited_by")
+  joinedAt  DateTime? @default(now()) @map("joined_at")
+  createdAt DateTime? @default(now()) @map("created_at")
+  rawData   Json?     @map("raw_data")
+
+  zone      Zone      @relation(fields: [zoneId], references: [id])
+
+  @@map("zone_members")
+}
+
+model HqMember {
+  id          String    @id
+  hqGroupId   String    @map("hq_group_id")
+  userId      String    @map("user_id")
+  role        String?   @default("member")
+  status      String?   @default("active")
+  invitedBy   String?   @map("invited_by")
+  userEmail   String?   @map("user_email")
+  userName    String?   @map("user_name")
+  joinedAt    DateTime? @default(now()) @map("joined_at")
+  createdAt   DateTime? @default(now()) @map("created_at")
+  updatedAt   DateTime? @updatedAt @map("updated_at")
+  rawData     Json?     @map("raw_data")
+
+  @@map("hq_members")
+}
+
+model IndividualSubscription {
+  id         String    @id
+  userId     String    @map("user_id")
+  tier       String?
+  plan       String?
+  status     String?   @default("active")
+  paymentRef String?   @map("payment_ref")
+  expiresAt  String?   @map("expires_at")
+  createdAt  DateTime? @default(now()) @map("created_at")
+  updatedAt  DateTime? @updatedAt @map("updated_at")
+  rawData    Json?     @map("raw_data")
+
+  @@map("individual_subscriptions")
+}
+
+model AdminRequest {
+  id            String    @id
+  userId        String    @map("user_id")
+  userEmail     String?   @map("user_email")
+  userName      String?   @map("user_name")
+  zoneId        String?   @map("zone_id")
+  zoneCode      String?   @map("zone_code")
+  requestedRole String?   @default("zone_admin") @map("requested_role")
+  status        String?   @default("pending")
+  reason        String?
+  reviewedBy    String?   @map("reviewed_by")
+  reviewedAt    DateTime? @map("reviewed_at")
+  createdAt     DateTime? @default(now()) @map("created_at")
+  updatedAt     DateTime? @updatedAt @map("updated_at")
+  rawData       Json?     @map("raw_data")
+
+  @@map("admin_requests")
+}
+
+model Subgroup {
+  id               String    @id
+  name             String?
+  zoneId           String?   @map("zone_id")
+  description      String?
+  type             String?   @default("subgroup")
+  status           String?   @default("active")
+  coordinatorId    String?   @map("coordinator_id")
+  coordinatorName  String?   @map("coordinator_name")
+  estimatedMembers Int?      @default(0) @map("estimated_members")
+  createdBy        String?   @map("created_by")
+  createdAt        DateTime? @default(now()) @map("created_at")
+  updatedAt        DateTime? @updatedAt @map("updated_at")
+  rawData          Json?     @map("raw_data")
+
+  members          SubgroupMember[]
+
+  @@map("subgroups")
+}
+
+model SubgroupMember {
+  id         String    @id
+  subgroupId String    @map("subgroup_id")
+  userId     String    @map("user_id")
+  role       String?   @default("member")
+  status     String?   @default("active")
+  addedBy    String?   @map("added_by")
+  joinedAt   DateTime? @default(now()) @map("joined_at")
+  createdAt  DateTime? @default(now()) @map("created_at")
+  rawData    Json?     @map("raw_data")
+
+  subgroup   Subgroup  @relation(fields: [subgroupId], references: [id])
+
+  @@map("subgroup_members")
+}
+
+// ============================================================================
+// 4. CHATS, MESSAGES & CALLS
+// ============================================================================
+
+model Chat {
+  id                 String   @id
+  type               String?
+  createdBy          String?  @map("created_by")
+  participants       Json?
+  participantDetails Json?    @map("participant_details")
+  unreadCount        Json?    @map("unread_count")
+  rawData            Json?    @map("raw_data")
+
+  messages           Message[]
+
+  @@map("chats")
+}
+
+model Message {
+  id         String   @id
+  text       String?
+  type       String?  @default("text")
+  chatId     String   @map("chat_id")
+  edited     Boolean?
+  status     String?
+  senderId   String   @map("sender_id")
+  senderName String?  @map("sender_name")
+  reactions  Json?
+  rawData    Json?    @map("raw_data")
+
+  chat       Chat     @relation(fields: [chatId], references: [id])
+  receipts   MessageReceipt[]
+
+  @@map("messages")
+}
+
+model MessageReceipt {
+  id          String   @id
+  messageId   String   @map("message_id")
+  recipientId String   @map("recipient_id")
+  deviceId    String   @map("device_id")
+  status      String
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  message     Message  @relation(fields: [messageId], references: [id])
+
+  @@map("message_receipts")
+}
+
+model Call {
+  id          String    @id
+  callerId    String?   @map("caller_id")
+  callerName  String?   @map("caller_name")
+  callerAvatar String?  @map("caller_avatar")
+  receiverId  String?   @map("receiver_id")
+  type        String?   @default("voice")
+  status      String?   @default("ringing")
+  chatId      String?   @map("chat_id")
+  roomId      String?   @map("room_id")
+  startedAt   DateTime? @map("started_at")
+  endedAt     DateTime? @map("ended_at")
+  createdAt   DateTime? @default(now()) @map("created_at")
+  rawData     Json?     @map("raw_data")
+
+  @@map("calls")
+}
+
+model UserStatus {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("user_statuses")
+}
+
+// ============================================================================
+// 5. SCHEDULES & EVENTS
+// ============================================================================
+
+model ScheduleProgram {
+  id             String    @id
+  name           String?
+  date           String?
+  createdAt      DateTime? @map("created_at")
+  rawData        Json?     @map("raw_data")
+  zoneId         String?   @map("zone_id")
+  days           Json?
+  weeks          Json?
+  newSongs       Json?     @map("new_songs")
+  isArchived     Boolean?  @map("is_archived")
+  dailySchedules Json?     @map("daily_schedules")
+  updatedAt      DateTime? @updatedAt @map("updated_at")
+
+  @@map("schedule_programs")
+}
+
+model ScheduleCategory {
+  id       String   @id
+  label    String?
+  icon     String?
+  color    String?
+  isActive Boolean? @map("is_active")
+  parentId String?  @map("parent_id")
+  rawData  Json?    @map("raw_data")
+
+  @@map("schedule_categories")
+}
+
+model UpcomingEvent {
+  id          String  @id
+  title       String?
+  date        String?
+  type        String?
+  zoneId      String? @map("zone_id")
+  location    String?
+  description String?
+  rawData     Json?   @map("raw_data")
+
+  @@map("upcoming_events")
+}
+
+// ============================================================================
+// 6. ATTENDANCE & ACTIVITY LOGS
+// ============================================================================
+
+model Attendance {
+  id                  String  @id
+  status              String?
+  userId              String? @map("user_id")
+  zoneId              String? @map("zone_id")
+  userName            String? @map("user_name")
+  eventName           String? @map("event_name")
+  qrCode              String? @map("qr_code")
+  checkInTime         String? @map("check_in_time")
+  recordedByAdminId   String? @map("recorded_by_admin_id")
+  rawData             Json?   @map("raw_data")
+
+  @@map("attendance")
+}
+
+model ActivityLog {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("activity_logs")
+}
+
+model SongHistory {
+  id          String    @id
+  type        String?
+  title       String?
+  songId      String?   @map("song_id")
+  newValue    String?   @map("new_value")
+  oldValue    String?   @map("old_value")
+  createdAt   DateTime? @map("created_at")
+  createdBy   String?   @map("created_by")
+  description String?
+  rawData     Json?     @map("raw_data")
+
+  @@map("song_history")
+}
+
+// ============================================================================
+// 7. FAVORITES, PLAYLISTS & NOTES
+// ============================================================================
+
+model UserFavorite {
+  id      String  @id
+  userId  String? @map("user_id")
+  songId  String? @map("song_id")
+  rawData Json?   @map("raw_data")
+
+  @@map("user_favorites")
+}
+
+model UserPlaylist {
+  id       String   @id
+  title    String?
+  userId   String?  @map("user_id")
+  songIds  Json?    @map("song_ids")
+  isPublic Boolean? @map("is_public")
+  rawData  Json?    @map("raw_data")
+
+  @@map("user_playlists")
+}
+
+model UserSongNote {
+  id        String    @id
+  userId    String    @map("user_id")
+  songId    String    @map("song_id")
+  notes     String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime? @updatedAt @map("updated_at")
+
+  @@map("user_song_notes")
+}
+
+model MediaDoodle {
+  id        String    @id
+  userId    String    @map("user_id")
+  songId    String    @map("song_id")
+  data      Json?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime? @updatedAt @map("updated_at")
+
+  @@map("media_doodles")
+}
+
+model SubmittedSong {
+  id              String    @id
+  userId          String?   @map("user_id")
+  title           String?
+  status          String?   @default("pending")
+  createdAt       DateTime? @map("created_at")
+  rawData         Json?     @map("raw_data")
+  zoneId          String?   @map("zone_id")
+  submittedBy     String?   @map("submitted_by")
+  submittedByEmail String?  @map("submitted_by_email")
+
+  @@map("submitted_songs")
+}
+
+// ============================================================================
+// 8. NOTIFICATIONS & MEDIA
+// ============================================================================
+
+model Notification {
+  id             String   @id
+  type           String?
+  title          String?
+  message        String?
+  zoneId         String?  @map("zone_id")
+  isRead         Boolean? @map("is_read")
+  category       String?
+  priority       String?
+  senderId       String?  @map("sender_id")
+  actionUrl      String?  @map("action_url")
+  createdAt      String?  @map("created_at")
+  targetUserId   String?  @map("target_user_id")
+  targetAudience String?  @map("target_audience")
+  rawData        Json?    @map("raw_data")
+
+  @@map("notifications")
+}
+
+model PushNotification {
+  id             String   @id
+  type           String?
+  title          String?
+  message        String?
+  category       String?
+  priority       String?
+  broadcast      Boolean?
+  actionUrl      String?  @map("action_url")
+  createdAt      String?  @map("created_at")
+  targetAudience String?  @map("target_audience")
+  rawData        Json?    @map("raw_data")
+
+  @@map("push_notifications")
+}
+
+model MediaVideo {
+  id            String   @id
+  title         String?
+  type          String?
+  videoUrl      String?  @map("video_url")
+  thumbnail     String?
+  description   String?
+  forHq         Boolean? @map("for_hq")
+  isYoutube     Boolean? @map("is_youtube")
+  featured      Boolean?
+  views         Int?
+  likes         Int?
+  createdBy     String?  @map("created_by")
+  createdByName String?  @map("created_by_name")
+  rawData       Json?    @map("raw_data")
+
+  @@map("media_videos")
+}
+
+model MediaAsset {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("media_assets")
+}
+
+model ZoneMediaAsset {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("zone_media_assets")
+}
+
+model MediaCategory {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("media_categories")
+}
+
+model MediaPlaylist {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("media_playlists")
+}
+
+// ============================================================================
+// 9. CATEGORIES & SETTINGS
+// ============================================================================
+
+model Category {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("categories")
+}
+
+model ZoneCategory {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("zone_categories")
+}
+
+model PageCategory {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("page_categories")
+}
+
+model ZonePageCategory {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("zone_page_categories")
+}
+
+model Setting {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("settings")
+}
+
+model AppUpdate {
+  id          String    @id
+  version     String
+  title       String?
+  description String?
+  isForced    Boolean?  @default(false) @map("is_forced")
+  platform    String?
+  createdAt   DateTime? @default(now()) @map("created_at")
+
+  @@map("app_updates")
+}
+
+model UserGroup {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("user_groups")
+}
+
+model UserNotification {
+  id      String @id
+  rawData Json?  @map("raw_data")
+
+  @@map("user_notifications")
+}
+
+// ============================================================================
+// 10. SUPPORT SYSTEM
+// ============================================================================
+
+model SupportTicket {
+  id            String    @id
+  userId        String?   @map("user_id")
+  userName      String?   @map("user_name")
+  userEmail     String?   @map("user_email")
+  subject       String?
+  category      String?   @default("general")
+  status        String?   @default("open")
+  priority      String?   @default("normal")
+  zoneId        String?   @map("zone_id")
+  lastMessage   String?   @map("last_message")
+  lastTimestamp DateTime? @default(now()) @map("last_timestamp")
+  unreadByAdmin Int?      @default(0) @map("unread_by_admin")
+  unreadByUser  Int?      @default(0) @map("unread_by_user")
+  createdAt     DateTime? @default(now()) @map("created_at")
+  updatedAt     DateTime? @updatedAt @map("updated_at")
+  rawData       Json?     @map("raw_data")
+
+  messages      SupportMessage[]
+
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  id          String    @id
+  ticketId    String    @map("ticket_id")
+  senderId    String    @map("sender_id")
+  senderName  String?   @map("sender_name")
+  senderType  String?   @default("user") @map("sender_type")
+  message     String
+  attachments Json?
+  createdAt   DateTime? @default(now()) @map("created_at")
+  rawData     Json?     @map("raw_data")
+
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id])
+
+  @@map("support_messages")
+}

@@ -1,8 +1,6 @@
 import { Router } from 'express';
-import { eq, desc, sql } from 'drizzle-orm';
 import crypto from 'crypto';
-import { db } from '../db';
-import { supportTickets, supportMessages, profiles } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
@@ -15,54 +13,13 @@ function isSupportAdmin(role: unknown): boolean {
 }
 
 async function getAccessibleTicket(ticketId: string, userId: string, role: unknown) {
-  const [ticket] = await db.select().from(supportTickets).where(eq(supportTickets.id, ticketId)).limit(1);
+  const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
   if (!ticket) return { ticket: null, forbidden: false };
   if (isSupportAdmin(role) || ticket.userId === userId) return { ticket, forbidden: false };
   return { ticket: null, forbidden: true };
 }
 
-// Ensure support tables exist in PostgreSQL database
-async function ensureTables() {
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS support_tickets (
-        id text PRIMARY KEY,
-        user_id text,
-        user_name text,
-        user_email text,
-        subject text,
-        category text DEFAULT 'general',
-        status text DEFAULT 'open',
-        priority text DEFAULT 'normal',
-        zone_id text,
-        last_message text,
-        last_timestamp timestamptz DEFAULT NOW(),
-        unread_by_admin integer DEFAULT 0,
-        unread_by_user integer DEFAULT 0,
-        created_at timestamptz DEFAULT NOW(),
-        updated_at timestamptz DEFAULT NOW(),
-        raw_data jsonb
-      );
-
-      CREATE TABLE IF NOT EXISTS support_messages (
-        id text PRIMARY KEY,
-        ticket_id text NOT NULL,
-        sender_id text NOT NULL,
-        sender_name text,
-        sender_type text DEFAULT 'user',
-        message text NOT NULL,
-        attachments jsonb,
-        created_at timestamptz DEFAULT NOW(),
-        raw_data jsonb
-      );
-    `);
-  } catch (err) {
-    console.warn('[support:init]', err);
-  }
-}
-ensureTables();
-
-function shapeTicket(row: typeof supportTickets.$inferSelect) {
+function shapeTicket(row: any) {
   const merged = mergeRawRow(row);
   const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
 
@@ -102,21 +59,33 @@ router.get('/', requireAuth, async (req, res) => {
     const { zoneId } = req.query;
     const effectiveZoneId = (zoneId && zoneId !== 'all') ? String(zoneId) : null;
 
-    let rows;
+    let rows: any[];
     if (isHqAdmin) {
       if (effectiveZoneId) {
         const withoutHyphen = effectiveZoneId.replace(/-/g, '').toLowerCase();
         const withHyphen = effectiveZoneId.includes('-') ? effectiveZoneId.toLowerCase() : effectiveZoneId.toLowerCase().replace(/^zone(\d+)$/, 'zone-$1');
 
-        rows = await db.select().from(supportTickets).where(
-          sql`lower(replace(${supportTickets.zoneId}, '-', '')) = ${withoutHyphen} OR 
-              lower(${supportTickets.zoneId}) = ${withHyphen}`
-        ).orderBy(desc(supportTickets.lastTimestamp)).limit(150);
+        rows = await prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM support_tickets
+           WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
+              OR lower(COALESCE(zone_id, '')) = $2
+           ORDER BY last_timestamp DESC
+           LIMIT 150`,
+          withoutHyphen,
+          withHyphen,
+        );
       } else {
-        rows = await db.select().from(supportTickets).orderBy(desc(supportTickets.lastTimestamp)).limit(150);
+        rows = await prisma.supportTicket.findMany({
+          orderBy: { lastTimestamp: 'desc' },
+          take: 150,
+        });
       }
     } else {
-      rows = await db.select().from(supportTickets).where(eq(supportTickets.userId, auth.userId)).orderBy(desc(supportTickets.lastTimestamp)).limit(50);
+      rows = await prisma.supportTicket.findMany({
+        where: { userId: auth.userId },
+        orderBy: { lastTimestamp: 'desc' },
+        take: 50,
+      });
     }
 
     res.json({ success: true, count: rows.length, data: rows.map(shapeTicket) });
@@ -165,11 +134,10 @@ router.get('/:ticketId/messages', requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: 'Support ticket not found' });
       return;
     }
-    const messageRows = await db
-      .select()
-      .from(supportMessages)
-      .where(eq(supportMessages.ticketId, ticketId))
-      .orderBy(supportMessages.createdAt);
+    const messageRows = await prisma.supportMessage.findMany({
+      where: { ticketId },
+      orderBy: { createdAt: 'asc' },
+    });
 
     const data = messageRows.map((m) => {
       const merged = mergeRawRow(m);
@@ -205,8 +173,7 @@ router.post('/', requireAuth, async (req: any, res) => {
     const messageId = crypto.randomUUID();
     const now = new Date();
 
-    // Fetch user profile name
-    const [userProf] = await db.select().from(profiles).where(eq(profiles.id, auth.userId)).limit(1);
+    const userProf = await prisma.profile.findUnique({ where: { id: auth.userId } });
     const rawP = (userProf?.rawData && typeof userProf.rawData === 'object') ? (userProf.rawData as Record<string, any>) : {};
     const userName = [userProf?.firstName, userProf?.lastName].filter(Boolean).join(' ') || rawP.first_name || auth.email || 'Singer';
     const userEmail = userProf?.email || rawP.email || auth.email || '';
@@ -226,34 +193,37 @@ router.post('/', requireAuth, async (req: any, res) => {
       createdAt: now.toISOString(),
     };
 
-    await db.insert(supportTickets).values({
-      id: ticketId,
-      userId: auth.userId,
-      userName,
-      userEmail,
-      subject: subject || 'Support Request',
-      category,
-      status: 'open',
-      priority,
-      zoneId: auth.zoneId || null,
-      lastMessage: firstText,
-      lastTimestamp: now,
-      unreadByAdmin: 1,
-      createdAt: now,
-      updatedAt: now,
-      rawData: ticketRaw,
+    await prisma.supportTicket.create({
+      data: {
+        id: ticketId,
+        userId: auth.userId,
+        userName,
+        userEmail,
+        subject: subject || 'Support Request',
+        category,
+        status: 'open',
+        priority,
+        zoneId: auth.zoneId || null,
+        lastMessage: firstText,
+        lastTimestamp: now,
+        unreadByAdmin: 1,
+        createdAt: now,
+        updatedAt: now,
+        rawData: ticketRaw,
+      },
     });
 
-    // Create initial message
-    await db.insert(supportMessages).values({
-      id: messageId,
-      ticketId,
-      senderId: auth.userId,
-      senderName: userName,
-      senderType: 'user',
-      message: firstText,
-      createdAt: now,
-      rawData: { id: messageId, ticketId, senderId: auth.userId, senderName: userName, text: firstText, createdAt: now.toISOString() },
+    await prisma.supportMessage.create({
+      data: {
+        id: messageId,
+        ticketId,
+        senderId: auth.userId,
+        senderName: userName,
+        senderType: 'user',
+        message: firstText,
+        createdAt: now,
+        rawData: { id: messageId, ticketId, senderId: auth.userId, senderName: userName, text: firstText, createdAt: now.toISOString() },
+      },
     });
 
     broadcast('support', ticketId, { type: 'new_ticket', ticket: ticketRaw });
@@ -303,24 +273,28 @@ router.post('/:ticketId/messages', requireAuth, async (req: any, res) => {
       createdAt: now.toISOString(),
     };
 
-    await db.insert(supportMessages).values({
-      id: messageId,
-      ticketId,
-      senderId: auth.userId,
-      senderName,
-      senderType,
-      message: text,
-      createdAt: now,
-      rawData: msgPayload,
+    await prisma.supportMessage.create({
+      data: {
+        id: messageId,
+        ticketId,
+        senderId: auth.userId,
+        senderName,
+        senderType,
+        message: text,
+        createdAt: now,
+        rawData: msgPayload,
+      },
     });
 
-    // Update ticket last_message & timestamps
-    await db.update(supportTickets).set({
-      lastMessage: text,
-      lastTimestamp: now,
-      updatedAt: now,
-      status: isAdmin ? 'in_progress' : 'open',
-    }).where(eq(supportTickets.id, ticketId));
+    await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: {
+        lastMessage: text,
+        lastTimestamp: now,
+        updatedAt: now,
+        status: isAdmin ? 'in_progress' : 'open',
+      },
+    });
 
     broadcast('support', ticketId, msgPayload);
     res.status(201).json({ success: true, data: msgPayload });
@@ -349,10 +323,13 @@ router.patch('/:ticketId/status', requireAuth, async (req, res) => {
       return;
     }
 
-    await db.update(supportTickets).set({
-      status,
-      updatedAt: new Date(),
-    }).where(eq(supportTickets.id, ticketId));
+    await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: {
+        status,
+        updatedAt: new Date(),
+      },
+    });
 
     res.json({ success: true, message: `Ticket status updated to ${status}` });
   } catch (err) {
@@ -370,8 +347,8 @@ router.delete('/:ticketId', requireAuth, async (req, res) => {
     }
 
     const { ticketId } = req.params;
-    await db.delete(supportMessages).where(eq(supportMessages.ticketId, ticketId));
-    await db.delete(supportTickets).where(eq(supportTickets.id, ticketId));
+    await prisma.supportMessage.deleteMany({ where: { ticketId } });
+    await prisma.supportTicket.delete({ where: { id: ticketId } });
 
     res.json({ success: true, message: 'Support ticket deleted' });
   } catch (err) {

@@ -1,20 +1,17 @@
 import { Router } from 'express';
-import { eq, or } from 'drizzle-orm';
-import { db } from '../db';
-import { userFavorites } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 import { asStringArray, mergeRawRow } from '../lib/rawRow';
 
 const router = Router();
 
-/** GET /favorites/me — songs list for the authenticated user (Supabase user_favorites). */
+/** GET /favorites/me */
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const userId = res.locals.auth.userId as string;
-    const rows = await db
-      .select()
-      .from(userFavorites)
-      .where(or(eq(userFavorites.id, userId), eq(userFavorites.userId, userId)));
+    const rows = await prisma.userFavorite.findMany({
+      where: { OR: [{ id: userId }, { userId }] },
+    });
 
     const songs = new Set<string>();
     for (const row of rows) {

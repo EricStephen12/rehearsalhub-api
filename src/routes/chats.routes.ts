@@ -1,8 +1,6 @@
 import { Router } from 'express';
-import { eq, desc, inArray, sql, and } from 'drizzle-orm';
 import crypto from 'crypto';
-import { db } from '../db';
-import { chats, messages, messageReceipts, profiles } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast, getUserPresence, getAllPresence } from '../ws/wsServer';
@@ -71,7 +69,7 @@ function normalizeTimestampToISO(ts: any): string | null {
   return null;
 }
 
-function shapeChat(row: typeof chats.$inferSelect) {
+function shapeChat(row: any) {
   const merged = mergeRawRow(row);
   const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
   const participants = Array.isArray(merged.participants)
@@ -115,7 +113,7 @@ function shapeChat(row: typeof chats.$inferSelect) {
   };
 }
 
-function chatParticipants(row: typeof chats.$inferSelect): string[] {
+function chatParticipants(row: any): string[] {
   const raw = (row.rawData && typeof row.rawData === 'object') ? (row.rawData as Record<string, any>) : {};
   const participants = Array.isArray(row.participants)
     ? row.participants
@@ -127,11 +125,11 @@ function chatParticipants(row: typeof chats.$inferSelect): string[] {
   return participants.map(String);
 }
 
-function canAccessChat(row: typeof chats.$inferSelect, userId: string): boolean {
+function canAccessChat(row: any, userId: string): boolean {
   return row.createdBy === userId || chatParticipants(row).includes(userId);
 }
 
-async function hydrateChats(chatRows: (typeof chats.$inferSelect)[]) {
+async function hydrateChats(chatRows: any[]) {
   if (!chatRows || chatRows.length === 0) return [];
 
   const allParticipantIds = new Set<string>();
@@ -154,7 +152,7 @@ async function hydrateChats(chatRows: (typeof chats.$inferSelect)[]) {
   const profileMap = new Map<string, { name: string; avatar?: string; email?: string; username?: string }>();
   if (allParticipantIds.size > 0) {
     const idArray = Array.from(allParticipantIds);
-    const pRows = await db.select().from(profiles).where(inArray(profiles.id, idArray));
+    const pRows = await prisma.profile.findMany({ where: { id: { in: idArray } } });
     for (const p of pRows) {
       const rawP = (p.rawData && typeof p.rawData === 'object') ? (p.rawData as Record<string, any>) : {};
       const firstName = p.firstName || rawP.first_name || rawP.firstName || '';
@@ -214,9 +212,9 @@ router.get('/', requireAuth, async (req, res) => {
     const isHqAdmin = auth.role === 'hq_admin' || auth.role === 'admin';
     const showAll = isHqAdmin && req.query.all === 'true';
 
-    const allRows = await db.select().from(chats).limit(500);
+    const allRows = await prisma.chat.findMany({ take: 500 });
 
-    let rows: (typeof chats.$inferSelect)[] = [];
+    let rows: any[] = [];
     if (showAll) {
       rows = allRows;
     } else {
@@ -254,7 +252,7 @@ router.get('/', requireAuth, async (req, res) => {
 router.get('/:chatId', requireAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const [row] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const row = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!row) {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
@@ -291,15 +289,15 @@ router.post('/', requireAuth, async (req, res) => {
     const id = requestedId || crypto.randomUUID();
     const effectiveZoneId = zone_id || (req.tenant?.effectiveZoneId ?? null);
 
-    // If chat already exists (e.g. deterministic zone group or subgroup room), merge participants and return
-    const [existing] = await db.select().from(chats).where(eq(chats.id, id)).limit(1);
+    const existing = await prisma.chat.findUnique({ where: { id } });
     if (existing) {
-      const prevParticipants = Array.isArray(existing.participants) ? existing.participants : [];
+      const prevParticipants = Array.isArray(existing.participants) ? existing.participants as string[] : [];
       const mergedParticipants = Array.from(new Set([...prevParticipants, ...participants]));
       const prevRaw = (existing.rawData && typeof existing.rawData === 'object') ? (existing.rawData as Record<string, any>) : {};
 
-      const [updated] = await db.update(chats)
-        .set({
+      const updated = await prisma.chat.update({
+        where: { id },
+        data: {
           participants: mergedParticipants,
           rawData: {
             ...prevRaw,
@@ -307,9 +305,8 @@ router.post('/', requireAuth, async (req, res) => {
             zoneId: effectiveZoneId || prevRaw.zoneId,
             updatedAt: new Date().toISOString(),
           },
-        })
-        .where(eq(chats.id, id))
-        .returning();
+        },
+      });
 
       const [hydrated] = await hydrateChats([updated]);
       broadcast('chat', updated.id, hydrated);
@@ -328,15 +325,17 @@ router.post('/', requireAuth, async (req, res) => {
       updatedAt: now,
     };
 
-    const [chat] = await db.insert(chats).values({
-      id,
-      type,
-      createdBy: auth.userId,
-      participants,
-      participantDetails: {},
-      unreadCount: {},
-      rawData,
-    }).returning();
+    const chat = await prisma.chat.create({
+      data: {
+        id,
+        type,
+        createdBy: auth.userId,
+        participants,
+        participantDetails: {},
+        unreadCount: {},
+        rawData,
+      },
+    });
 
     const [hydrated] = await hydrateChats([chat]);
     broadcast('chat', chat.id, hydrated);
@@ -351,7 +350,7 @@ router.post('/', requireAuth, async (req, res) => {
 router.patch('/:chatId', requireAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const [existing] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const existing = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!existing) {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
@@ -406,13 +405,13 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    const [updated] = await db.update(chats)
-      .set({
+    const updated = await prisma.chat.update({
+      where: { id: chatId },
+      data: {
         ...(nextParticipants ? { participants: nextParticipants } : {}),
         rawData: nextRaw,
-      })
-      .where(eq(chats.id, chatId))
-      .returning();
+      },
+    });
 
     const [hydrated] = await hydrateChats([updated]);
     broadcast('chat', chatId, hydrated);
@@ -427,7 +426,7 @@ router.patch('/:chatId', requireAuth, async (req, res) => {
 router.delete('/:chatId', requireAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!chat) {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
@@ -436,8 +435,8 @@ router.delete('/:chatId', requireAuth, async (req, res) => {
       res.status(403).json({ success: false, error: 'Only the chat creator can delete this chat' });
       return;
     }
-    await db.delete(messages).where(eq(messages.chatId, chatId));
-    await db.delete(chats).where(eq(chats.id, chatId));
+    await prisma.message.deleteMany({ where: { chatId } });
+    await prisma.chat.delete({ where: { id: chatId } });
     broadcast('chat_deleted', chatId, { id: chatId });
     res.json({ success: true, message: 'Chat deleted successfully' });
   } catch (err) {
@@ -450,12 +449,12 @@ router.delete('/:chatId', requireAuth, async (req, res) => {
 router.delete('/:chatId/messages', requireAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!chat || !canAccessChat(chat, res.locals.auth.userId)) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
-    await db.delete(messages).where(eq(messages.chatId, chatId));
+    await prisma.message.deleteMany({ where: { chatId } });
     broadcast('chat_cleared', chatId, { chatId });
     res.json({ success: true, message: 'All messages cleared' });
   } catch (err) {
@@ -467,7 +466,7 @@ router.delete('/:chatId/messages', requireAuth, async (req, res) => {
 // GET /chats/:chatId/messages
 router.get('/:chatId/messages', requireAuth, async (req, res) => {
   try {
-    const [chat] = await db.select().from(chats).where(eq(chats.id, req.params.chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: req.params.chatId } });
     if (!chat) {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
@@ -476,7 +475,7 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
-    const messageRows = await db.select().from(messages).where(eq(messages.chatId, req.params.chatId));
+    const messageRows = await prisma.message.findMany({ where: { chatId: req.params.chatId } });
     
     // Sort chronologically by createdAt from rawData
     messageRows.sort((a, b) => {
@@ -501,50 +500,50 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
           || normalizeTimestampToISO((m as any).createdAt || (m as any).created_at)
           || '1970-01-01T00:00:00.000Z';
         return {
-        ...merged,
-        id: m.id,
-        chatId: m.chatId,
-        text: m.text ?? (merged.text as string | undefined) ?? (merged.content as string | undefined) ?? '',
-        content: (merged.content as string | undefined) ?? m.text,
-        type: m.type || raw.type || 'text',
-        senderId: m.senderId || raw.senderId || 'admin',
-        senderName: raw.senderName || raw.sender_name || 'Admin Support',
-        senderAvatar: raw.senderAvatar || raw.sender_avatar,
-        senderType: raw.senderType || (raw.senderId === 'admin' ? 'admin' : 'user'),
-        timestamp: msgCreatedAt,
-        createdAt: msgCreatedAt,
-        updatedAt: normalizeTimestampToISO(raw.updatedAt) || msgCreatedAt,
-        imageUrl: raw.imageUrl || raw.mediaUrl || raw.media_url,
-        audioUrl: raw.audioUrl || raw.audio_url || raw.voiceUrl || raw.voice_url || raw.media_url,
-        videoUrl: raw.videoUrl || raw.video_url,
-        documentUrl: raw.documentUrl || raw.document_url,
-        documentName: raw.documentName || raw.document_name,
-        documentSize: raw.documentSize || raw.document_size,
-        songData: raw.songData || raw.song_data,
-        playlistData: raw.playlistData || raw.playlist_data,
-        profileData: raw.profileData || raw.profile_data || raw.contactData || raw.contact_data,
-        contactData: raw.contactData || raw.contact_data || raw.profileData,
-        waveform: raw.waveform,
-        duration: raw.duration || raw.voiceDuration || raw.voice_duration,
-        pollOptions: raw.pollOptions || raw.poll_options,
-        viewOnce: raw.viewOnce ?? false,
-        viewOnceViewed: raw.viewOnceViewed ?? false,
-        callType: raw.callType,
-        callId: raw.callId,
-        note: raw.note,
-        attachment: raw.attachment,
-        voiceUrl: raw.voiceUrl || raw.voice_url || raw.audioUrl,
-        voiceDuration: raw.voiceDuration || raw.voice_duration || raw.duration,
-        replyTo: raw.replyTo || raw.reply_to,
-        reactions: m.reactions || raw.reactions || {},
-        edited: m.edited ?? raw.edited ?? false,
-        deleted: raw.deleted ?? false,
-        starred: raw.starred ?? false,
-        pinned: raw.pinned ?? raw.pinnedInChat ?? false,
-        status: m.status || raw.status || 'delivered',
-        pinnedInChat: raw.pinnedInChat ?? raw.pinned ?? false,
-      };
-    });
+          ...merged,
+          id: m.id,
+          chatId: m.chatId,
+          text: m.text ?? (merged.text as string | undefined) ?? (merged.content as string | undefined) ?? '',
+          content: (merged.content as string | undefined) ?? m.text,
+          type: m.type || raw.type || 'text',
+          senderId: m.senderId || raw.senderId || 'admin',
+          senderName: raw.senderName || raw.sender_name || 'Admin Support',
+          senderAvatar: raw.senderAvatar || raw.sender_avatar,
+          senderType: raw.senderType || (raw.senderId === 'admin' ? 'admin' : 'user'),
+          timestamp: msgCreatedAt,
+          createdAt: msgCreatedAt,
+          updatedAt: normalizeTimestampToISO(raw.updatedAt) || msgCreatedAt,
+          imageUrl: raw.imageUrl || raw.mediaUrl || raw.media_url,
+          audioUrl: raw.audioUrl || raw.audio_url || raw.voiceUrl || raw.voice_url || raw.media_url,
+          videoUrl: raw.videoUrl || raw.video_url,
+          documentUrl: raw.documentUrl || raw.document_url,
+          documentName: raw.documentName || raw.document_name,
+          documentSize: raw.documentSize || raw.document_size,
+          songData: raw.songData || raw.song_data,
+          playlistData: raw.playlistData || raw.playlist_data,
+          profileData: raw.profileData || raw.profile_data || raw.contactData || raw.contact_data,
+          contactData: raw.contactData || raw.contact_data || raw.profileData,
+          waveform: raw.waveform,
+          duration: raw.duration || raw.voiceDuration || raw.voice_duration,
+          pollOptions: raw.pollOptions || raw.poll_options,
+          viewOnce: raw.viewOnce ?? false,
+          viewOnceViewed: raw.viewOnceViewed ?? false,
+          callType: raw.callType,
+          callId: raw.callId,
+          note: raw.note,
+          attachment: raw.attachment,
+          voiceUrl: raw.voiceUrl || raw.voice_url || raw.audioUrl,
+          voiceDuration: raw.voiceDuration || raw.voice_duration || raw.duration,
+          replyTo: raw.replyTo || raw.reply_to,
+          reactions: m.reactions || raw.reactions || {},
+          edited: m.edited ?? raw.edited ?? false,
+          deleted: raw.deleted ?? false,
+          starred: raw.starred ?? false,
+          pinned: raw.pinned ?? raw.pinnedInChat ?? false,
+          status: m.status || raw.status || 'delivered',
+          pinnedInChat: raw.pinnedInChat ?? raw.pinned ?? false,
+        };
+      });
 
     // Mark unread messages from other senders as read & clear unread count for current user
     const auth = res.locals.auth;
@@ -552,21 +551,26 @@ router.get('/:chatId/messages', requireAuth, async (req, res) => {
     const currentUserId = auth?.userId as string;
     if (currentUserId && chatId) {
       try {
-        const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+        const existingChat = await prisma.chat.findUnique({ where: { id: chatId } });
         if (existingChat) {
           const unread = (typeof existingChat.unreadCount === 'object' && existingChat.unreadCount !== null)
             ? { ...(existingChat.unreadCount as Record<string, number>) }
             : {};
           if (unread[currentUserId] && unread[currentUserId] > 0) {
             unread[currentUserId] = 0;
-            await db.update(chats).set({ unreadCount: unread }).where(eq(chats.id, chatId));
+            await prisma.chat.update({ where: { id: chatId }, data: { unreadCount: unread } });
             broadcast('chat_read', chatId, { chatId, userId: currentUserId });
           }
         }
 
-        await db.update(messages)
-          .set({ status: 'read' })
-          .where(and(eq(messages.chatId, chatId), sql`${messages.senderId} != ${currentUserId}`, sql`${messages.status} != 'read'`));
+        await prisma.message.updateMany({
+          where: {
+            chatId,
+            senderId: { not: currentUserId },
+            status: { not: 'read' },
+          },
+          data: { status: 'read' },
+        });
       } catch (readErr) {
         console.warn('[chats/:id/messages] Error clearing unread status:', readErr);
       }
@@ -586,7 +590,7 @@ router.post('/:chatId/read', requireAuth, async (req: any, res) => {
     const auth = res.locals.auth;
     const currentUserId = auth.userId as string;
 
-    const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const existingChat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!existingChat) {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
@@ -600,12 +604,16 @@ router.post('/:chatId/read', requireAuth, async (req: any, res) => {
         ? { ...(existingChat.unreadCount as Record<string, number>) }
         : {};
       unread[currentUserId] = 0;
-      await db.update(chats).set({ unreadCount: unread }).where(eq(chats.id, chatId));
+      await prisma.chat.update({ where: { id: chatId }, data: { unreadCount: unread } });
     }
 
-    await db.update(messages)
-      .set({ status: 'read' })
-      .where(and(eq(messages.chatId, chatId), sql`${messages.senderId} != ${currentUserId}`));
+    await prisma.message.updateMany({
+      where: {
+        chatId,
+        senderId: { not: currentUserId },
+      },
+      data: { status: 'read' },
+    });
 
     broadcast('chat_read', chatId, { chatId, userId: currentUserId });
     res.json({ success: true, message: 'Chat marked as read' });
@@ -625,12 +633,12 @@ router.patch('/messages/:messageId/status', requireAuth, async (req, res) => {
       return;
     }
 
-    const [message] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+    const message = await prisma.message.findUnique({ where: { id: messageId } });
     if (!message) {
       res.status(404).json({ success: false, error: 'Message not found' });
       return;
     }
-    const [chat] = await db.select().from(chats).where(eq(chats.id, message.chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: message.chatId } });
     if (!chat || !canAccessChat(chat, res.locals.auth.userId)) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
@@ -643,16 +651,17 @@ router.patch('/messages/:messageId/status', requireAuth, async (req, res) => {
       return;
     }
     const receiptId = `${messageId}:${recipientId}:${deviceId}`;
-    await db.insert(messageReceipts).values({
-      id: receiptId,
-      messageId,
-      recipientId,
-      deviceId,
-      status,
-      updatedAt: new Date(),
-    }).onConflictDoUpdate({
-      target: messageReceipts.id,
-      set: { status, updatedAt: new Date() },
+    await prisma.messageReceipt.upsert({
+      where: { id: receiptId },
+      update: { status, updatedAt: new Date() },
+      create: {
+        id: receiptId,
+        messageId,
+        recipientId,
+        deviceId,
+        status,
+        updatedAt: new Date(),
+      },
     });
     const receipt = { messageId, recipientId, deviceId, status, updatedAt: new Date().toISOString() };
     broadcast('message_receipt', message.chatId, receipt);
@@ -668,7 +677,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
   try {
     const { chatId } = req.params;
     const auth = res.locals.auth;
-    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!chat) {
       res.status(404).json({ success: false, error: 'Chat not found' });
       return;
@@ -689,7 +698,7 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       res.status(400).json({ success: false, error: 'Message id is too long' });
       return;
     }
-    const [alreadyCreated] = await db.select().from(messages).where(eq(messages.id, id)).limit(1);
+    const alreadyCreated = await prisma.message.findUnique({ where: { id } });
     if (alreadyCreated) {
       if (alreadyCreated.chatId !== chatId || alreadyCreated.senderId !== auth.userId) {
         res.status(409).json({ success: false, error: 'Message id is already in use' });
@@ -743,36 +752,41 @@ router.post('/:chatId/messages', requireAuth, async (req: any, res) => {
       status: 'delivered',
     };
 
-    await db.insert(messages).values({
-      id,
-      chatId,
-      senderId: auth.userId,
-      senderName,
-      text,
-      type: req.body.type || 'text',
-      reactions: req.body.reactions || {},
-      rawData,
+    await prisma.message.create({
+      data: {
+        id,
+        chatId,
+        senderId: auth.userId,
+        senderName,
+        text,
+        type: req.body.type || 'text',
+        reactions: req.body.reactions || {},
+        rawData,
+      },
     });
 
     // Update last message & increment unreadCount for other participants
-    const [existingChat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const existingChat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (existingChat) {
       const chatRaw = (existingChat.rawData && typeof existingChat.rawData === 'object') ? (existingChat.rawData as Record<string, any>) : {};
       const currentUnread = (typeof existingChat.unreadCount === 'object' && existingChat.unreadCount !== null)
         ? { ...(existingChat.unreadCount as Record<string, number>) }
         : {};
 
-      const participants = Array.isArray(existingChat.participants) ? existingChat.participants : [];
+      const participants = Array.isArray(existingChat.participants) ? existingChat.participants as string[] : [];
       participants.forEach((pId: string) => {
         if (pId !== auth.userId) {
           currentUnread[pId] = (currentUnread[pId] || 0) + 1;
         }
       });
 
-      await db.update(chats).set({
-        unreadCount: currentUnread,
-        rawData: { ...chatRaw, lastMessage: text || 'Media attachment', lastTimestamp: now, updatedAt: now },
-      }).where(eq(chats.id, chatId));
+      await prisma.chat.update({
+        where: { id: chatId },
+        data: {
+          unreadCount: currentUnread,
+          rawData: { ...chatRaw, lastMessage: text || 'Media attachment', lastTimestamp: now, updatedAt: now },
+        },
+      });
     }
 
     broadcast('chat', chatId, rawData);
@@ -792,12 +806,12 @@ router.post('/:chatId/messages/:messageId/reactions', requireAuth, async (req, r
     const auth = res.locals.auth;
     const userId = auth.userId as string;
 
-    const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+    const existing = await prisma.message.findUnique({ where: { id: messageId } });
     if (!existing) {
       res.status(404).json({ success: false, error: 'Message not found' });
       return;
     }
-    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!chat || !canAccessChat(chat, userId) || existing.chatId !== chatId) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
@@ -824,13 +838,13 @@ router.post('/:chatId/messages/:messageId/reactions', requireAuth, async (req, r
       updatedAt: new Date().toISOString(),
     };
 
-    const [updated] = await db.update(messages)
-      .set({
+    await prisma.message.update({
+      where: { id: messageId },
+      data: {
         reactions: prevReactions,
         rawData: nextRaw,
-      })
-      .where(eq(messages.id, messageId))
-      .returning();
+      },
+    });
 
     broadcast('message_reaction', chatId, { messageId, reactions: prevReactions });
     broadcast('messages', chatId, { id: messageId, reactions: prevReactions });
@@ -849,12 +863,12 @@ router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
     const auth = res.locals.auth;
     const updateText = text !== undefined ? text : content;
 
-    const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+    const existing = await prisma.message.findUnique({ where: { id: messageId } });
     if (!existing) {
       res.status(404).json({ success: false, error: 'Message not found' });
       return;
     }
-    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!chat || existing.chatId !== chatId || !canAccessChat(chat, auth.userId)) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
@@ -876,14 +890,14 @@ router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    const [updated] = await db.update(messages)
-      .set({
+    await prisma.message.update({
+      where: { id: messageId },
+      data: {
         ...(updateText !== undefined ? { text: updateText, edited: true } : {}),
         ...(reactions !== undefined ? { reactions } : {}),
         rawData: nextRaw,
-      })
-      .where(eq(messages.id, messageId))
-      .returning();
+      },
+    });
 
     broadcast('message_updated', chatId, { id: messageId, ...nextRaw });
     broadcast('messages', chatId, { id: messageId, ...nextRaw });
@@ -898,32 +912,18 @@ router.patch('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
 router.delete('/:chatId/messages/:messageId', requireAuth, async (req, res) => {
   try {
     const { chatId, messageId } = req.params;
-    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
     if (!chat || !canAccessChat(chat, res.locals.auth.userId)) {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
-    await db.delete(messages).where(eq(messages.id, messageId));
+    await prisma.message.delete({ where: { id: messageId } });
     broadcast('message_deleted', chatId, { messageId });
     broadcast('messages', chatId, { id: messageId, deleted: true });
     res.json({ success: true, message: 'Message deleted successfully' });
   } catch (err) {
     console.error('[chats/:id/messages/:msgId:delete]', err);
     res.status(500).json({ success: false, error: 'Failed to delete message' });
-  }
-});
-
-// POST /chats/:chatId/read — Mark chat as read
-router.post('/:chatId/read', requireAuth, async (req, res) => {
-  try {
-    const { chatId } = req.params;
-    const auth = res.locals.auth;
-
-    broadcast('chat_read', chatId, { chatId, userId: auth.userId });
-    res.json({ success: true, message: 'Chat marked as read' });
-  } catch (err) {
-    console.error('[chats/:id/read]', err);
-    res.status(500).json({ success: false, error: 'Failed to mark chat as read' });
   }
 });
 
@@ -950,4 +950,3 @@ router.post('/:chatId/typing', requireAuth, async (req, res) => {
 });
 
 export default router;
-

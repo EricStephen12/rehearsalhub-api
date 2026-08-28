@@ -5,14 +5,8 @@
 
 import { Router } from 'express';
 import crypto from 'crypto';
-import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
-import {
-  profiles, individualSubscriptions,
-  chatsV2, messagesV2, callsV2,
-  zoneMembers, hqMembers, mediaDoodles, userSongNotes,
-} from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 import { broadcast } from '../ws/wsServer';
 
@@ -43,12 +37,19 @@ writesRouter.patch('/subscriptions/:userId', requireAuth, async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [updated] = await db.update(individualSubscriptions)
-    .set({ ...parsed.data as any, updatedAt: new Date() })
-    .where(eq(individualSubscriptions.userId, userId))
-    .returning();
+  const sub = await prisma.individualSubscription.findFirst({ where: { userId } });
+  if (!sub) { notFound(res); return; }
 
-  if (!updated) { notFound(res); return; }
+  const updateData: any = { updatedAt: new Date() };
+  if (parsed.data.status) updateData.status = parsed.data.status;
+  if (parsed.data.plan) updateData.plan = parsed.data.plan;
+  if (parsed.data.expires_at) updateData.expiresAt = parsed.data.expires_at;
+
+  const updated = await prisma.individualSubscription.update({
+    where: { id: sub.id },
+    data: updateData,
+  });
+
   broadcast('subscription', userId, updated);
   res.json({ success: true, data: updated });
 });
@@ -79,19 +80,21 @@ writesRouter.post('/chats', requireAuth, async (req, res) => {
     ? parsed.data.member_ids
     : [...parsed.data.member_ids, auth.userId];
 
-  const [chat] = await db.insert(chatsV2).values({
-    id: crypto.randomUUID(),
-    type: parsed.data.type,
-    createdBy: auth.userId,
-    participants,
-    participantDetails: {},
-    unreadCount: {},
-    rawData: {
-      name: parsed.data.name,
-      zoneId: parsed.data.zone_id,
+  const chat = await prisma.chat.create({
+    data: {
+      id: crypto.randomUUID(),
+      type: parsed.data.type,
+      createdBy: auth.userId,
       participants,
+      participantDetails: {},
+      unreadCount: {},
+      rawData: {
+        name: parsed.data.name,
+        zoneId: parsed.data.zone_id,
+        participants,
+      },
     },
-  }).returning();
+  });
 
   broadcast('chat', chat.id, chat);
   res.status(201).json({ success: true, data: chat });
@@ -110,7 +113,7 @@ writesRouter.patch('/chats/:chatId', requireAuth, async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, chatId)).limit(1);
+  const chat = await prisma.chat.findUnique({ where: { id: chatId } });
   if (!chat) { notFound(res); return; }
   if (!chatMemberIds(chat).includes(auth.userId)) { forbidden(res); return; }
 
@@ -123,13 +126,13 @@ writesRouter.patch('/chats/:chatId', requireAuth, async (req, res) => {
     ...(parsed.data.last_message_at !== undefined ? { lastMessageAt: parsed.data.last_message_at } : {}),
   };
 
-  const [updated] = await db.update(chatsV2)
-    .set({
+  const updated = await prisma.chat.update({
+    where: { id: chatId },
+    data: {
       ...(parsed.data.member_ids !== undefined ? { participants: parsed.data.member_ids } : {}),
       rawData: nextRaw,
-    })
-    .where(eq(chatsV2.id, chatId))
-    .returning();
+    },
+  });
 
   broadcast('chat', chatId, updated);
   res.json({ success: true, data: updated });
@@ -149,30 +152,28 @@ writesRouter.patch('/chats/:chatId/messages/:msgId', requireAuth, async (req, re
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, chatId)).limit(1);
+  const chat = await prisma.chat.findUnique({ where: { id: chatId } });
   if (!chat) { notFound(res); return; }
   if (!chatMemberIds(chat).includes(auth.userId)) { forbidden(res); return; }
 
-  const [msg] = await db.select().from(messagesV2).where(eq(messagesV2.id, msgId)).limit(1);
+  const msg = await prisma.message.findUnique({ where: { id: msgId } });
   if (!msg) { notFound(res); return; }
 
-  // Only the sender can edit or the text content; anyone in the chat can star/pin their copy
   if (parsed.data.content !== undefined && msg.senderId !== auth.userId) { forbidden(res); return; }
 
   const prevRaw = msg.rawData && typeof msg.rawData === 'object' ? (msg.rawData as Record<string, unknown>) : {};
-  const [updated] = await db.update(messagesV2)
-    .set({
+  const updated = await prisma.message.update({
+    where: { id: msgId },
+    data: {
       ...(parsed.data.content !== undefined ? { text: parsed.data.content, edited: true } : {}),
       rawData: {
         ...prevRaw,
         ...(parsed.data.starred !== undefined ? { starred: parsed.data.starred } : {}),
         ...(parsed.data.pinned !== undefined ? { pinned: parsed.data.pinned } : {}),
       },
-    })
-    .where(eq(messagesV2.id, msgId))
-    .returning();
+    },
+  });
 
-  // Broadcast edit so all open chat clients update in real-time
   broadcast('messages', chatId, {
     type: 'edit',
     messageId: msgId,
@@ -188,23 +189,23 @@ writesRouter.delete('/chats/:chatId/messages/:msgId', requireAuth, async (req, r
   const { chatId, msgId } = req.params;
   const auth = res.locals.auth;
 
-  const [chat] = await db.select().from(chatsV2).where(eq(chatsV2.id, chatId)).limit(1);
+  const chat = await prisma.chat.findUnique({ where: { id: chatId } });
   if (!chat) { notFound(res); return; }
   if (!chatMemberIds(chat).includes(auth.userId)) { forbidden(res); return; }
 
-  const [msg] = await db.select().from(messagesV2).where(eq(messagesV2.id, msgId)).limit(1);
+  const msg = await prisma.message.findUnique({ where: { id: msgId } });
   if (!msg) { notFound(res); return; }
   if (msg.senderId !== auth.userId) { forbidden(res); return; }
 
   const prevRaw = msg.rawData && typeof msg.rawData === 'object' ? (msg.rawData as Record<string, unknown>) : {};
-  await db.update(messagesV2)
-    .set({
+  await prisma.message.update({
+    where: { id: msgId },
+    data: {
       text: 'This message was deleted',
       rawData: { ...prevRaw, deleted: true, deletedAt: new Date().toISOString() },
-    })
-    .where(eq(messagesV2.id, msgId));
+    },
+  });
 
-  // Broadcast delete event so all clients immediately show "deleted" state
   broadcast('messages', chatId, { type: 'delete', messageId: msgId });
   res.json({ success: true });
 });
@@ -217,14 +218,14 @@ writesRouter.patch('/calls/:callId', requireAuth, async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [call] = await db.select().from(callsV2).where(eq(callsV2.id, callId)).limit(1);
+  const call = await prisma.call.findUnique({ where: { id: callId } });
   if (!call) { notFound(res); return; }
   if (call.callerId !== auth.userId && call.receiverId !== auth.userId) { forbidden(res); return; }
 
-  const [updated] = await db.update(callsV2)
-    .set({ status: parsed.data.status })
-    .where(eq(callsV2.id, callId))
-    .returning();
+  const updated = await prisma.call.update({
+    where: { id: callId },
+    data: { status: parsed.data.status },
+  });
 
   broadcast('call', callId, updated);
   res.json({ success: true, data: updated });
@@ -244,17 +245,19 @@ writesRouter.post('/calls', requireAuth, async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [call] = await db.insert(callsV2).values({
-    id: crypto.randomUUID(),
-    callerId: auth.userId,
-    receiverId: parsed.data.receiver_id,
-    type: parsed.data.type,
-    callerName: parsed.data.caller_name,
-    callerAvatar: parsed.data.caller_avatar,
-    chatId: parsed.data.chat_id,
-    roomId: parsed.data.room_id,
-    status: 'ringing',
-  }).returning();
+  const call = await prisma.call.create({
+    data: {
+      id: crypto.randomUUID(),
+      callerId: auth.userId,
+      receiverId: parsed.data.receiver_id,
+      type: parsed.data.type,
+      callerName: parsed.data.caller_name,
+      callerAvatar: parsed.data.caller_avatar,
+      chatId: parsed.data.chat_id,
+      roomId: parsed.data.room_id,
+      status: 'ringing',
+    },
+  });
 
   broadcast('call', call.id, call);
   res.status(201).json({ success: true, data: call });
@@ -268,7 +271,7 @@ writesRouter.post('/members/zone-switch', requireAuth, async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [existing] = await db.select().from(profiles).where(eq(profiles.id, auth.userId)).limit(1);
+  const existing = await prisma.profile.findUnique({ where: { id: auth.userId } });
   if (!existing) { notFound(res); return; }
 
   const raw =
@@ -278,10 +281,10 @@ writesRouter.post('/members/zone-switch', requireAuth, async (req, res) => {
   raw.zone_code = parsed.data.zone_code;
   raw.zoneCode = parsed.data.zone_code;
 
-  const [updatedProfile] = await db.update(profiles)
-    .set({ rawData: raw, updatedAt: new Date().toISOString() })
-    .where(eq(profiles.id, auth.userId))
-    .returning();
+  const updatedProfile = await prisma.profile.update({
+    where: { id: auth.userId },
+    data: { rawData: raw as any, updatedAt: new Date().toISOString() },
+  });
 
   if (updatedProfile) broadcast('profile', auth.userId, updatedProfile);
   res.json({ success: true });
@@ -299,21 +302,29 @@ writesRouter.post('/members/zone-join', requireAuth, async (req, res) => {
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
   if (parsed.data.is_hq) {
-    await db.insert(hqMembers).values({
-      id: `hq_${auth.userId}`,
-      hqGroupId: parsed.data.zone_id,
-      userId: auth.userId,
-      userEmail: parsed.data.user_email,
-      userName: parsed.data.user_name,
-    }).onConflictDoNothing();
+    await prisma.hqMember.upsert({
+      where: { id: `hq_${auth.userId}` },
+      update: {},
+      create: {
+        id: `hq_${auth.userId}`,
+        hqGroupId: parsed.data.zone_id,
+        userId: auth.userId,
+        userEmail: parsed.data.user_email,
+        userName: parsed.data.user_name,
+      },
+    });
   } else {
-    await db.insert(zoneMembers).values({
-      id: `mem_${Date.now()}_${auth.userId}`,
-      zoneId: parsed.data.zone_id,
-      userId: auth.userId,
-      role: 'member',
-      status: 'active',
-    }).onConflictDoNothing();
+    await prisma.zoneMember.upsert({
+      where: { id: `mem_${Date.now()}_${auth.userId}` },
+      update: {},
+      create: {
+        id: `mem_${Date.now()}_${auth.userId}`,
+        zoneId: parsed.data.zone_id,
+        userId: auth.userId,
+        role: 'member',
+        status: 'active',
+      },
+    });
   }
 
   res.status(201).json({ success: true });
@@ -328,23 +339,25 @@ writesRouter.patch('/songs/annotations/:songId', requireAuth, async (req, res) =
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const existing = await db.select().from(mediaDoodles)
-    .where(eq(mediaDoodles.songId, songId)).limit(1);
+  const ownRecord = await prisma.mediaDoodle.findFirst({
+    where: { songId, userId: auth.userId },
+  });
 
-  const ownRecord = existing.find(r => r.userId === auth.userId);
   if (ownRecord) {
-    const [updated] = await db.update(mediaDoodles)
-      .set({ data: parsed.data.data, updatedAt: new Date() })
-      .where(eq(mediaDoodles.id, ownRecord.id))
-      .returning();
+    const updated = await prisma.mediaDoodle.update({
+      where: { id: ownRecord.id },
+      data: { data: parsed.data.data as any, updatedAt: new Date() },
+    });
     res.json({ success: true, data: updated });
   } else {
-    const [created] = await db.insert(mediaDoodles).values({
-      id: crypto.randomUUID(),
-      userId: auth.userId,
-      songId,
-      data: parsed.data.data,
-    }).returning();
+    const created = await prisma.mediaDoodle.create({
+      data: {
+        id: crypto.randomUUID(),
+        userId: auth.userId,
+        songId,
+        data: parsed.data.data as any,
+      },
+    });
     res.json({ success: true, data: created });
   }
 });
@@ -356,23 +369,25 @@ writesRouter.patch('/songs/notes/:songId', requireAuth, async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const existing = await db.select().from(userSongNotes)
-    .where(eq(userSongNotes.songId, songId)).limit(1);
+  const ownRecord = await prisma.userSongNote.findFirst({
+    where: { songId, userId: auth.userId },
+  });
 
-  const ownRecord = existing.find(r => r.userId === auth.userId);
   if (ownRecord) {
-    const [updated] = await db.update(userSongNotes)
-      .set({ notes: parsed.data.notes, updatedAt: new Date() })
-      .where(eq(userSongNotes.id, ownRecord.id))
-      .returning();
+    const updated = await prisma.userSongNote.update({
+      where: { id: ownRecord.id },
+      data: { notes: parsed.data.notes, updatedAt: new Date() },
+    });
     res.json({ success: true, data: updated });
   } else {
-    const [created] = await db.insert(userSongNotes).values({
-      id: crypto.randomUUID(),
-      userId: auth.userId,
-      songId,
-      notes: parsed.data.notes,
-    }).returning();
+    const created = await prisma.userSongNote.create({
+      data: {
+        id: crypto.randomUUID(),
+        userId: auth.userId,
+        songId,
+        notes: parsed.data.notes,
+      },
+    });
     res.json({ success: true, data: created });
   }
 });
@@ -388,7 +403,7 @@ writesRouter.patch('/profiles/:userId/onesignal', requireAuth, async (req, res) 
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, error: 'Invalid body' }); return; }
 
-  const [existing] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1);
+  const existing = await prisma.profile.findUnique({ where: { id: userId } });
   if (!existing) { notFound(res); return; }
 
   const raw =
@@ -397,10 +412,10 @@ writesRouter.patch('/profiles/:userId/onesignal', requireAuth, async (req, res) 
       : {};
   raw.onesignal_sub_id = parsed.data.subscription_id;
 
-  const [updatedProfile] = await db.update(profiles)
-    .set({ rawData: raw, updatedAt: new Date().toISOString() })
-    .where(eq(profiles.id, userId))
-    .returning();
+  const updatedProfile = await prisma.profile.update({
+    where: { id: userId },
+    data: { rawData: raw as any, updatedAt: new Date().toISOString() },
+  });
 
   if (updatedProfile) broadcast('profile', userId, updatedProfile);
   res.json({ success: true });

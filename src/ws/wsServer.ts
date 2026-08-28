@@ -1,11 +1,10 @@
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
+import crypto from 'crypto';
 import { verifyAccessToken } from '../auth/token';
 import { revocationStore } from '../auth/revocation';
-import { db } from '../db';
-import { chats, calls } from '../schema';
-import { eq } from 'drizzle-orm';
+import prisma from '../lib/prisma';
 
 type SubscriptionKey = `${string}:${string}`;
 
@@ -160,8 +159,8 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
           return;
         }
         if (chatResources.has(msg.resource) && msg.id !== 'all') {
-          const [chat] = await db.select().from(chats).where(eq(chats.id, msg.id)).limit(1);
-          const participants = Array.isArray(chat?.participants) ? chat.participants.map(String) : [];
+          const chat = await prisma.chat.findUnique({ where: { id: msg.id } });
+          const participants = Array.isArray(chat?.participants) ? (chat!.participants as string[]).map(String) : [];
           const rawChat = chat?.rawData && typeof chat.rawData === 'object' ? chat.rawData as Record<string, any> : {};
           const rawParticipants = Array.isArray(rawChat.participants) ? rawChat.participants.map(String) : [];
           if (!chat || (chat.createdBy !== socket.userId && !participants.includes(socket.userId) && !rawParticipants.includes(socket.userId))) {
@@ -170,14 +169,14 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
           }
         }
         if (callResources.has(msg.resource) && msg.id !== 'all' && msg.id !== socket.userId) {
-          const [call] = await db.select().from(calls).where(eq(calls.id, msg.id)).limit(1);
+          const call = await prisma.call.findUnique({ where: { id: msg.id } });
           if (!call || (call.callerId !== socket.userId && call.receiverId !== socket.userId)) {
             socket.send(JSON.stringify({ type: 'error', error: 'Forbidden subscription' }));
             return;
           }
         }
         const key: SubscriptionKey = `${msg.resource}:${msg.id}`;
-        connSubs.add(key); // Set deduplicates automatically
+        connSubs.add(key);
         socket.send(JSON.stringify({ type: 'subscribed', resource: msg.resource, id: msg.id }));
 
         const since = Number(msg.since);
@@ -187,7 +186,6 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
             .forEach((event) => socket.send(JSON.stringify({ type: 'event', ...event })));
         }
 
-        // If subscribing to presence, send current presence immediately
         if (msg.resource === 'presence') {
           if (msg.id === 'all') {
             socket.send(JSON.stringify({ type: 'event', resource: 'presence', id: 'all', data: getAllPresence() }));
@@ -228,10 +226,8 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
           ...(msg.signal || msg.data || msg),
         };
 
-        // Broadcast to any subscriber of call:{targetUserId}
         broadcast('call', targetUserId, payload);
 
-        // Also deliver directly to all open sockets of target user
         for (const conn of connections.values()) {
           if (conn.userId === targetUserId && conn.readyState === WebSocket.OPEN) {
             conn.send(JSON.stringify({
@@ -259,7 +255,6 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
     });
   });
 
-  // 25-second heartbeat to keep WebSocket tunnels active through Cloudflare and mobile proxies
   const heartbeatInterval = setInterval(() => {
     for (const [_, socket] of connections) {
       if (socket.readyState === WebSocket.OPEN) {

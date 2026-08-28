@@ -38,6 +38,8 @@ import livekitRouter from './routes/livekit.routes';
 import internalCronRouter from './routes/internal-cron.routes';
 import { createWsServer } from './ws/wsServer';
 import { tenantMiddleware } from './middleware/tenant.middleware';
+import prisma from './lib/prisma';
+import { mergeRawRow } from './lib/rawRow';
 
 // Global process crash prevention
 process.on('unhandledRejection', (reason, promise) => {
@@ -60,7 +62,7 @@ if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
   throw new Error('CORS_ALLOWED_ORIGINS must be configured in production');
 }
 
-// Rate limiter: 5000 requests per 15 minutes per IP (won't choke normal active admin sessions)
+// Rate limiter: 5000 requests per 15 minutes per IP
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5000,
@@ -82,15 +84,14 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '1mb' }));
 app.use(limiter);
-// Tenant scope middleware — runs globally after auth, resolves req.tenant for every request
 app.use(tenantMiddleware);
 
-// Health check — no auth needed (Crucial for Railway zero-downtime health probes)
+// Health check
 app.get('/health', (_, res) => {
   res.status(200).json({ status: 'ok', service: 'rehearsalhub-api', timestamp: new Date().toISOString() });
 });
 
-// Root info — no auth needed
+// Root info
 app.get('/', (_, res) => {
   res.json({
     service: 'RehearsalHub Songs API',
@@ -106,10 +107,10 @@ app.get('/', (_, res) => {
   });
 });
 
-// Auth routes — no x-api-key required
+// Auth routes
 app.use('/auth', authRouter);
 
-// Protected user API routes — require JWT via requireAuth middleware
+// Protected user API routes
 app.use('/profiles', profilesRouter);
 app.use('/zones', zonesRouter);
 app.use('/members', membersRouter);
@@ -149,15 +150,12 @@ app.use('/upcoming-events', upcomingEventsRouter);
 app.use('/events', upcomingEventsRouter);
 app.use('/calendar-events', upcomingEventsRouter);
 app.use('/internal/cron', internalCronRouter);
-
-// LiveKit token generation — used by mobile app (GET) and web portal (POST)
-// Returns a signed JWT token + server URL for joining a call room
 app.use('/livekit-token', livekitRouter);
 
-// Write endpoints — require JWT
+// Write endpoints
 app.use('/', writesRouter);
 
-// Public song endpoints — require x-api-key header (supporting both standard and legacy paths)
+// Public song endpoints
 app.use('/api/master-songs', apiKeyAuth, masterSongsRouter);
 app.use('/api/ministered-songs', apiKeyAuth, masterSongsRouter);
 app.use('/api/praise-night-songs', apiKeyAuth, praiseNightSongsRouter);
@@ -167,14 +165,8 @@ app.use('/api/media', apiKeyAuth, mediaRouter);
 // Public settings endpoint (used by AppUpdateChecker before login)
 app.get('/api/settings/:id', apiKeyAuth, async (req, res) => {
   try {
-    const { eq } = await import('drizzle-orm');
-    const { db } = await import('./db');
-    const { settings } = await import('./schema');
-    const { mergeRawRow } = await import('./lib/rawRow');
-    
-    const [row] = await db.select().from(settings).where(eq(settings.id, req.params.id)).limit(1);
+    const row = await prisma.setting.findUnique({ where: { id: req.params.id } });
     if (!row) return res.status(404).json({ success: false, error: 'Not found' });
-    
     res.json({ success: true, data: mergeRawRow(row) });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Something went wrong' });
@@ -206,12 +198,10 @@ httpServer.listen(PORT, async () => {
   if (!process.env.JWT_EXPIRES_IN) console.warn('   WARNING: JWT_EXPIRES_IN not set, defaulting to 15m');
   if (!process.env.REFRESH_TOKEN_EXPIRES_DAYS) console.warn('   WARNING: REFRESH_TOKEN_EXPIRES_DAYS not set, defaulting to 30');
 
-  // Warm up the DB connection on startup so first real request doesn't fail
+  // Warm up the DB connection on startup via Prisma
   try {
-    const { db } = await import('./db');
-    const { sql } = await import('drizzle-orm');
-    await db.execute(sql`SELECT 1`);
-    console.log(`   DB connection warmed up ✓`);
+    await prisma.$queryRawUnsafe('SELECT 1');
+    console.log(`   Prisma DB connection warmed up ✓`);
   } catch (e) {
     console.warn(`   DB warmup failed (will retry on first request):`, (e as Error).message);
   }

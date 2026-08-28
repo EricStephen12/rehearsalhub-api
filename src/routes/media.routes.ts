@@ -1,8 +1,6 @@
 import { Router } from 'express';
-import { eq, desc, sql } from 'drizzle-orm';
 import crypto from 'crypto';
-import { db } from '../db';
-import { mediaVideos, mediaAssets, zoneMediaAssets, mediaCategories } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 import { mergeRawRow } from '../lib/rawRow';
 import { broadcast } from '../ws/wsServer';
@@ -73,7 +71,7 @@ function normalizeAsset(row: any, source: 'media_videos' | 'media_assets' | 'zon
   };
 }
 
-// In-memory cache for all 7,700+ media assets
+// In-memory cache for media assets
 let cachedMediaAssets: any[] | null = null;
 let lastMediaCacheTime = 0;
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds
@@ -90,9 +88,9 @@ async function loadAllMediaAssets(): Promise<any[]> {
   }
 
   const [videoRows, assetRows, zoneAssetRows] = await Promise.all([
-    db.select().from(mediaVideos),
-    db.select().from(mediaAssets),
-    db.select().from(zoneMediaAssets),
+    prisma.mediaVideo.findMany(),
+    prisma.mediaAsset.findMany(),
+    prisma.zoneMediaAsset.findMany(),
   ]);
 
   const combined = [
@@ -108,7 +106,7 @@ async function loadAllMediaAssets(): Promise<any[]> {
   return combined;
 }
 
-// GET /media/stats - Summary counts across all 7,700+ media assets
+// GET /media/stats - Summary counts across all media assets
 router.get('/stats', requireAuth, async (_req, res) => {
   try {
     const all = await loadAllMediaAssets();
@@ -140,11 +138,11 @@ router.get('/', requireAuth, async (req: any, res) => {
     const { zoneId: requestedZoneId, type, search, featured, isHqOnly, limit, page = '1' } = req.query;
     const allAssets = await loadAllMediaAssets();
     const tenant = req.tenant;
-    const zoneId = tenant.isHQAdmin ? requestedZoneId : tenant.effectiveZoneId;
+    const zoneId = tenant?.isHQAdmin ? requestedZoneId : tenant?.effectiveZoneId;
 
     let data = allAssets;
 
-    if (!tenant.isHQAdmin) {
+    if (!tenant?.isHQAdmin) {
       data = data.filter((item) => {
         if (item.forHq || item.isHqOnly) return false;
         if (!item.zoneId || item.zoneId === 'global') return true;
@@ -161,13 +159,11 @@ router.get('/', requireAuth, async (req: any, res) => {
       const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
 
       data = data.filter((item) => {
-        // Strictly exclude items marked for HQ only
         if (item.forHq || (item as any).isHqOnly) return false;
 
         const itemZone = (item.zoneId || '').toLowerCase();
         const itemWithoutHyphen = itemZone.replace(/-/g, '');
 
-        // Match this specific zone or public global media
         return (
           itemZone === target ||
           itemZone === withHyphen ||
@@ -196,7 +192,6 @@ router.get('/', requireAuth, async (req: any, res) => {
 
     const totalMatching = data.length;
 
-    // If limit is provided, apply pagination; otherwise return all filtered (up to 15,000)
     let finalData = data;
     const pageNum = Math.max(Number(page) || 1, 1);
     
@@ -224,7 +219,7 @@ router.get('/', requireAuth, async (req: any, res) => {
 // GET /media/categories - List media categories
 router.get('/categories', requireAuth, async (_req, res) => {
   try {
-    const rows = await db.select().from(mediaCategories);
+    const rows = await prisma.mediaCategory.findMany();
     const data = rows.map((r) => {
       const m = mergeRawRow(r);
       return {
@@ -249,27 +244,24 @@ router.get('/:id', requireAuth, async (req: any, res) => {
     const tenant = req.tenant;
 
     const canView = (item: any): boolean => {
-      if (tenant.isHQAdmin) return true;
+      if (tenant?.isHQAdmin) return true;
       if (item.forHq || item.isHqOnly) return false;
-      return !item.zoneId || item.zoneId === 'global' || item.zoneId === tenant.effectiveZoneId;
+      return !item.zoneId || item.zoneId === 'global' || item.zoneId === tenant?.effectiveZoneId;
     };
 
-    // Check media_videos first
-    const [videoRow] = await db.select().from(mediaVideos).where(eq(mediaVideos.id, id)).limit(1);
+    const videoRow = await prisma.mediaVideo.findUnique({ where: { id } });
     if (videoRow) {
       const item = normalizeAsset(videoRow, 'media_videos');
       return canView(item) ? res.json({ success: true, data: item }) : res.status(404).json({ success: false, error: 'Media not found' });
     }
 
-    // Check media_assets
-    const [assetRow] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).limit(1);
+    const assetRow = await prisma.mediaAsset.findUnique({ where: { id } });
     if (assetRow) {
       const item = normalizeAsset(assetRow, 'media_assets');
       return canView(item) ? res.json({ success: true, data: item }) : res.status(404).json({ success: false, error: 'Media not found' });
     }
 
-    // Check zone_media_assets
-    const [zoneRow] = await db.select().from(zoneMediaAssets).where(eq(zoneMediaAssets.id, id)).limit(1);
+    const zoneRow = await prisma.zoneMediaAsset.findUnique({ where: { id } });
     if (zoneRow) {
       const item = normalizeAsset(zoneRow, 'zone_media_assets');
       return canView(item) ? res.json({ success: true, data: item }) : res.status(404).json({ success: false, error: 'Media not found' });
@@ -311,8 +303,8 @@ router.post('/', requireAuth, async (req: any, res) => {
     }
 
     const tenant = req.tenant;
-    const effectiveZoneId = tenant.isHQAdmin ? (zoneId || 'global') : tenant.effectiveZoneId;
-    if (!tenant.isHQAdmin && zoneId && zoneId !== tenant.effectiveZoneId) {
+    const effectiveZoneId = tenant?.isHQAdmin ? (zoneId || 'global') : tenant?.effectiveZoneId;
+    if (!tenant?.isHQAdmin && zoneId && zoneId !== tenant?.effectiveZoneId) {
       res.status(403).json({ success: false, error: 'Forbidden: Media is outside your tenant scope' });
       return;
     }
@@ -342,22 +334,23 @@ router.post('/', requireAuth, async (req: any, res) => {
       updatedAt: now,
     };
 
-    // Save to mediaVideos table
-    await db.insert(mediaVideos).values({
-      id,
-      title,
-      type: type || 'video',
-      videoUrl: finalUrl,
-      thumbnail: thumbnail || null,
-      description: description || '',
-      forHq: Boolean(forHq),
-      isYoutube: isYt,
-      featured: Boolean(featured),
-      views: 0,
-      likes: 0,
-      createdBy: auth?.userId || null,
-      createdByName: auth?.name || auth?.email || null,
-      rawData,
+    await prisma.mediaVideo.create({
+      data: {
+        id,
+        title,
+        type: type || 'video',
+        videoUrl: finalUrl,
+        thumbnail: thumbnail || null,
+        description: description || '',
+        forHq: Boolean(forHq),
+        isYoutube: isYt,
+        featured: Boolean(featured),
+        views: 0,
+        likes: 0,
+        createdBy: auth?.userId || null,
+        createdByName: auth?.name || auth?.email || null,
+        rawData,
+      },
     });
 
     invalidateMediaCache();
@@ -385,7 +378,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
       res.status(403).json({ success: false, error: 'Forbidden' });
       return;
     }
-    const [existing] = await db.select().from(mediaVideos).where(eq(mediaVideos.id, id)).limit(1);
+    const existing = await prisma.mediaVideo.findUnique({ where: { id } });
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Media item not found in media_videos' });
     }
@@ -394,10 +387,10 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const updates = req.body;
     const tenant = (req as any).tenant;
     const existingZoneId = m.zoneId || m.zone_id || 'global';
-    if (!tenant.isHQAdmin && existingZoneId !== tenant.effectiveZoneId && existingZoneId !== 'global') {
+    if (!tenant?.isHQAdmin && existingZoneId !== tenant?.effectiveZoneId && existingZoneId !== 'global') {
       return res.status(403).json({ success: false, error: 'Forbidden' });
     }
-    if (!tenant.isHQAdmin && updates.zoneId && updates.zoneId !== tenant.effectiveZoneId) {
+    if (!tenant?.isHQAdmin && updates.zoneId && updates.zoneId !== tenant?.effectiveZoneId) {
       return res.status(403).json({ success: false, error: 'Forbidden: Media is outside your tenant scope' });
     }
     const now = new Date().toISOString();
@@ -408,9 +401,9 @@ router.patch('/:id', requireAuth, async (req, res) => {
       updatedAt: now,
     };
 
-    await db
-      .update(mediaVideos)
-      .set({
+    await prisma.mediaVideo.update({
+      where: { id },
+      data: {
         title: updates.title !== undefined ? updates.title : existing.title,
         type: updates.type !== undefined ? updates.type : existing.type,
         videoUrl: updates.url || updates.videoUrl !== undefined ? (updates.url || updates.videoUrl) : existing.videoUrl,
@@ -422,8 +415,8 @@ router.patch('/:id', requireAuth, async (req, res) => {
         views: updates.views !== undefined ? updates.views : existing.views,
         likes: updates.likes !== undefined ? updates.likes : existing.likes,
         rawData: updatedRaw,
-      })
-      .where(eq(mediaVideos.id, id));
+      },
+    });
 
     invalidateMediaCache();
     broadcast('media', 'all', updatedRaw);
@@ -455,17 +448,16 @@ router.delete('/:id', requireAuth, async (req, res) => {
     }
     const tenant = (req as any).tenant;
     if (!isHQRole(role)) {
-      if (existing.forHq || existing.isHqOnly || (existing.zoneId && existing.zoneId !== tenant.effectiveZoneId)) {
+      if (existing.forHq || existing.isHqOnly || (existing.zoneId && existing.zoneId !== tenant?.effectiveZoneId)) {
         res.status(403).json({ success: false, error: 'Forbidden' });
         return;
       }
     }
 
-    // Delete across tables
-    await Promise.all([
-      db.delete(mediaVideos).where(eq(mediaVideos.id, id)),
-      db.delete(mediaAssets).where(eq(mediaAssets.id, id)),
-      db.delete(zoneMediaAssets).where(eq(zoneMediaAssets.id, id)),
+    await Promise.allSettled([
+      prisma.mediaVideo.deleteMany({ where: { id } }),
+      prisma.mediaAsset.deleteMany({ where: { id } }),
+      prisma.zoneMediaAsset.deleteMany({ where: { id } }),
     ]);
 
     invalidateMediaCache();

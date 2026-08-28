@@ -1,8 +1,6 @@
 import { Router } from 'express';
-import { eq, or, desc, and, inArray, sql } from 'drizzle-orm';
 import crypto from 'crypto';
-import { db } from '../db';
-import { calls, profiles } from '../schema';
+import prisma from '../lib/prisma';
 import { requireAuth } from '../auth/auth.middleware';
 import { broadcast } from '../ws/wsServer';
 import { mergeRawRow } from '../lib/rawRow';
@@ -15,27 +13,28 @@ router.get('/', requireAuth, async (req, res) => {
     const auth = res.locals.auth;
     const userId = auth.userId as string;
 
-    const userCalls = await db.select().from(calls)
-      .where(
-        sql`${calls.callerId} = ${userId} 
-          OR ${calls.receiverId} = ${userId} 
-          OR ${calls.rawData}->>'callerId' = ${userId} 
-          OR ${calls.rawData}->>'receiverId' = ${userId} 
-          OR ${calls.rawData}->>'caller_id' = ${userId} 
-          OR ${calls.rawData}->>'receiver_id' = ${userId} 
-          OR ${calls.rawData}->'participants' ? ${userId}`
-      )
-      .orderBy(desc(calls.createdAt))
-      .limit(100);
+    const userCalls = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM calls
+       WHERE caller_id = $1 
+          OR receiver_id = $1 
+          OR raw_data->>'callerId' = $1 
+          OR raw_data->>'receiverId' = $1 
+          OR raw_data->>'caller_id' = $1 
+          OR raw_data->>'receiver_id' = $1 
+          OR raw_data->'participants' ? $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      userId,
+    );
 
     const userIds = Array.from(new Set(userCalls.flatMap(c => {
       const raw = (c.rawData && typeof c.rawData === 'object') ? (c.rawData as any) : {};
       return [c.callerId, c.receiverId, raw.callerId, raw.receiverId, raw.caller_id, raw.receiver_id];
-    }).filter(Boolean)));
+    }).filter(Boolean))) as string[];
 
     const profileMap: Record<string, { name: string; avatar: string | null }> = {};
     if (userIds.length > 0) {
-      const userProfiles = await db.select().from(profiles).where(inArray(profiles.id, userIds));
+      const userProfiles = await prisma.profile.findMany({ where: { id: { in: userIds } } });
       for (const p of userProfiles) {
         const raw = (p.rawData && typeof p.rawData === 'object') ? (p.rawData as any) : {};
         const name = [p.firstName, p.lastName].filter(Boolean).join(' ') || raw.name || raw.displayName || p.email || 'Member';
@@ -93,7 +92,7 @@ router.get('/', requireAuth, async (req, res) => {
 // GET /calls/:callId — Get specific call details
 router.get('/:callId', requireAuth, async (req, res) => {
   try {
-    const [call] = await db.select().from(calls).where(eq(calls.id, req.params.callId)).limit(1);
+    const call = await prisma.call.findUnique({ where: { id: req.params.callId } });
     if (!call) { 
       res.status(404).json({ success: false, error: 'Call not found' }); 
       return; 
@@ -132,7 +131,7 @@ router.post('/', requireAuth, async (req, res) => {
       res.status(400).json({ success: false, error: 'receiver_id is required' });
       return;
     }
-    const [receiver] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, targetReceiverId)).limit(1);
+    const receiver = await prisma.profile.findUnique({ where: { id: targetReceiverId } });
     if (!receiver) {
       res.status(404).json({ success: false, error: 'Receiver not found' });
       return;
@@ -141,17 +140,19 @@ router.post('/', requireAuth, async (req, res) => {
     const id = crypto.randomUUID();
     const generatedRoomId = room_id || roomId || `call_${id}`;
 
-    const [call] = await db.insert(calls).values({
-      id,
-      callerId: auth.userId,
-      receiverId: targetReceiverId,
-      type: type === 'video' ? 'video' : 'voice',
-      callerName: caller_name || callerName || 'Caller',
-      callerAvatar: caller_avatar || callerAvatar,
-      chatId: chat_id || chatId,
-      roomId: generatedRoomId,
-      status: 'ringing',
-    }).returning();
+    const call = await prisma.call.create({
+      data: {
+        id,
+        callerId: auth.userId,
+        receiverId: targetReceiverId,
+        type: type === 'video' ? 'video' : 'voice',
+        callerName: caller_name || callerName || 'Caller',
+        callerAvatar: caller_avatar || callerAvatar,
+        chatId: chat_id || chatId,
+        roomId: generatedRoomId,
+        status: 'ringing',
+      },
+    });
 
     broadcast('call', call.id, call);
     broadcast('incoming_call', targetReceiverId, call);
@@ -174,7 +175,7 @@ router.patch('/:callId', requireAuth, async (req, res) => {
       return;
     }
 
-    const [existing] = await db.select().from(calls).where(eq(calls.id, callId)).limit(1);
+    const existing = await prisma.call.findUnique({ where: { id: callId } });
     if (!existing) {
       res.status(404).json({ success: false, error: 'Call not found' });
       return;
@@ -185,7 +186,7 @@ router.patch('/:callId', requireAuth, async (req, res) => {
     }
 
     const now = new Date();
-    const updates: Partial<typeof calls.$inferInsert> = {
+    const updates: any = {
       status,
     };
 
@@ -195,10 +196,10 @@ router.patch('/:callId', requireAuth, async (req, res) => {
       updates.endedAt = now;
     }
 
-    const [updated] = await db.update(calls)
-      .set(updates)
-      .where(eq(calls.id, callId))
-      .returning();
+    const updated = await prisma.call.update({
+      where: { id: callId },
+      data: updates,
+    });
 
     broadcast('call', callId, updated);
     if (existing?.receiverId) broadcast('call_status', existing.receiverId, updated);
@@ -217,7 +218,7 @@ router.post('/:callId/signal', requireAuth, async (req, res) => {
     const { signal, targetUserId } = req.body;
     const auth = res.locals.auth;
 
-    const [call] = await db.select().from(calls).where(eq(calls.id, callId)).limit(1);
+    const call = await prisma.call.findUnique({ where: { id: callId } });
     if (!call) {
       res.status(404).json({ success: false, error: 'Call not found' });
       return;
@@ -252,12 +253,12 @@ router.delete('/:callId', requireAuth, async (req, res) => {
     const { callId } = req.params;
     const auth = res.locals.auth;
 
-    await db.delete(calls).where(
-      and(
-        eq(calls.id, callId),
-        or(eq(calls.callerId, auth.userId), eq(calls.receiverId, auth.userId))
-      )
-    );
+    await prisma.call.deleteMany({
+      where: {
+        id: callId,
+        OR: [{ callerId: auth.userId }, { receiverId: auth.userId }],
+      },
+    });
     res.json({ success: true, message: 'Call log deleted' });
   } catch (err) {
     console.error('[calls/:id:delete]', err);
@@ -272,12 +273,12 @@ router.delete('/', requireAuth, async (req, res) => {
     const auth = res.locals.auth;
 
     if (Array.isArray(ids) && ids.length > 0) {
-      await db.delete(calls).where(
-        and(
-          inArray(calls.id, ids),
-          or(eq(calls.callerId, auth.userId), eq(calls.receiverId, auth.userId))
-        )
-      );
+      await prisma.call.deleteMany({
+        where: {
+          id: { in: ids },
+          OR: [{ callerId: auth.userId }, { receiverId: auth.userId }],
+        },
+      });
     }
     res.json({ success: true, message: 'Call logs deleted' });
   } catch (err) {
@@ -287,4 +288,3 @@ router.delete('/', requireAuth, async (req, res) => {
 });
 
 export default router;
-
