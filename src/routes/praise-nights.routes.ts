@@ -18,6 +18,8 @@ router.get('/', requireAuth, async (req, res) => {
       ? req.tenant.effectiveZoneId
       : (queryZoneId || (!isHqAdmin ? (auth.zoneId as string | null) : null));
 
+    const effectiveChurchId = req.tenant?.effectiveChurchId || (req.query.subGroupId as string) || (req.query.churchId as string) || null;
+
     const HQ_GROUP_IDS = new Set([
       'zone-001', 'zone-002', 'zone-003', 'zone-004', 'zone-005',
       'loveworld-singers-hq', 'zone001', 'zone002', 'zone003', 'zone004', 'zone005',
@@ -26,7 +28,14 @@ router.get('/', requireAuth, async (req, res) => {
 
     let rows: any[] = [];
 
-    if (effectiveZoneId) {
+    // 1. If scoped to a specific church / subgroup
+    if (effectiveChurchId) {
+      const [sgProgs, zRows] = await Promise.all([
+        prisma.subgroupProgram.findMany({ where: { subGroupId: effectiveChurchId } }),
+        prisma.zoneProgram.findMany({ where: { rawData: { path: ['subGroupId'], equals: effectiveChurchId } } }).catch(() => []),
+      ]);
+      rows = [...sgProgs.map(mergeRawRow), ...zRows.map(mergeRawRow)];
+    } else if (effectiveZoneId) {
       const cleanZone = effectiveZoneId.toLowerCase().trim();
       const withoutHyphen = cleanZone.replace(/-/g, '');
       const withHyphen = cleanZone.includes('-') ? cleanZone : cleanZone.replace(/^zone(\d+)$/, 'zone-$1');
@@ -39,7 +48,7 @@ router.get('/', requireAuth, async (req, res) => {
         cleanZone === 'loveworld-singers-hq';
 
       if (isHqGroup || effectiveZoneId === 'all') {
-        const [hqProgs, zRows] = await Promise.all([
+        const [hqProgs, zRows, sgProgs] = await Promise.all([
           prisma.program.findMany(),
           prisma.$queryRawUnsafe<any[]>(
             `SELECT * FROM zone_programs
@@ -50,12 +59,14 @@ router.get('/', requireAuth, async (req, res) => {
             withoutHyphen,
             withHyphen,
           ),
+          prisma.subgroupProgram.findMany().catch(() => []),
         ]);
         const mergedZ = zRows.map(mergeRawRow);
         const mergedHq = hqProgs.map(mergeRawRow);
-        rows = [...mergedZ, ...mergedHq];
+        const mergedSg = sgProgs.map(mergeRawRow);
+        rows = [...mergedZ, ...mergedHq, ...mergedSg];
       } else {
-        const [zRows, zoneSpecificRows] = await Promise.all([
+        const [zRows, zoneSpecificRows, userSubgroups] = await Promise.all([
           prisma.$queryRawUnsafe<any[]>(
             `SELECT * FROM zone_programs
              WHERE lower(replace(COALESCE(zone_id, ''), '-', '')) = $1
@@ -74,14 +85,36 @@ router.get('/', requireAuth, async (req, res) => {
             withoutHyphen,
             withHyphen,
           ),
+          prisma.subgroup.findMany({
+            where: {
+              OR: [
+                { zoneId: effectiveZoneId },
+                { coordinatorId: auth.userId },
+                { createdBy: auth.userId },
+              ]
+            }
+          }).catch(() => []),
         ]);
         const mergedZ = zRows.map(mergeRawRow);
         const mergedZoneSpecific = zoneSpecificRows.map(mergeRawRow);
-        rows = [...mergedZ, ...mergedZoneSpecific];
+        
+        let sgProgs: any[] = [];
+        if (userSubgroups.length > 0) {
+          const sgIds = userSubgroups.map(s => s.id);
+          const foundSgProgs = await prisma.subgroupProgram.findMany({
+            where: { subGroupId: { in: sgIds } }
+          }).catch(() => []);
+          sgProgs = foundSgProgs.map(mergeRawRow);
+        }
+
+        rows = [...mergedZ, ...mergedZoneSpecific, ...sgProgs];
       }
     } else {
-      const allGlobal = await prisma.program.findMany();
-      rows = allGlobal.map(mergeRawRow);
+      const [allGlobal, allSg] = await Promise.all([
+        prisma.program.findMany(),
+        prisma.subgroupProgram.findMany().catch(() => []),
+      ]);
+      rows = [...allGlobal.map(mergeRawRow), ...allSg.map(mergeRawRow)];
     }
 
     function getProgramTimestamp(p: any): number {
@@ -198,6 +231,23 @@ router.post('/', requireAuth, requireTenantAdmin, async (req, res) => {
     const programId = req.body.id || `prog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const effectiveCategory = category || (status === 'ongoing' ? 'ongoing' : status === 'archive' ? 'archive' : 'pre-rehearsal');
     const effectiveStatus = status || effectiveCategory;
+    const subGroupId = req.body.subGroupId || req.body.sub_group_id || req.body.churchId || req.tenant?.effectiveChurchId || null;
+
+    if (subGroupId) {
+      await prisma.subgroupProgram.create({
+        data: {
+          id: programId,
+          name: name || 'Church Rehearsal',
+          date: date || new Date().toISOString(),
+          location: location || null,
+          category: effectiveCategory,
+          subGroupId,
+          songIds: songIds || (Array.isArray(songs) ? songs.map((s: any) => s.id || s) : []),
+          rawData: { ...req.body, subGroupId },
+        },
+      }).catch(() => null);
+    }
+
     const isZoneSpecific = zoneId && zoneId !== 'zone-001' && !zoneId.toLowerCase().includes('hq') && zoneId !== 'ZONE001';
 
     if (isZoneSpecific) {
@@ -217,7 +267,7 @@ router.post('/', requireAuth, requireTenantAdmin, async (req, res) => {
           songIds: songIds || (Array.isArray(songs) ? songs.map((s: any) => s.id || s) : []),
           createdAt: new Date(),
           updatedAt: new Date(),
-          rawData: req.body,
+          rawData: { ...req.body, subGroupId },
         },
       });
     } else {
@@ -226,7 +276,7 @@ router.post('/', requireAuth, requireTenantAdmin, async (req, res) => {
           id: programId,
           name: name || 'Praise Night / Program',
           date: date || new Date().toISOString(),
-          scope: scope || 'hq',
+          scope: scope || (subGroupId ? 'subgroup' : 'hq'),
           zoneId: zoneId || 'zone-001',
           category: effectiveCategory,
           status: effectiveStatus,
@@ -238,7 +288,7 @@ router.post('/', requireAuth, requireTenantAdmin, async (req, res) => {
           songIds: songIds || (Array.isArray(songs) ? songs.map((s: any) => s.id || s) : []),
           createdAt: new Date(),
           updatedAt: new Date(),
-          rawData: req.body,
+          rawData: { ...req.body, subGroupId },
         },
       });
     }
