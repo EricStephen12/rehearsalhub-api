@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import { AsyncLocalStorage } from 'async_hooks';
 import * as schema from './schema';
 
-const connectionString = process.env.DATABASE_URL!;
+const connectionString = process.env.DATABASE_ADMIN_URL || process.env.DATABASE_URL!;
 
 // Resilient postgres client configuration for cloud deployments (Railway/Supabase/Neon)
 export const rawPgClient = postgres(connectionString, {

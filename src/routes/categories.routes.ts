@@ -10,21 +10,34 @@ const router = Router();
 router.get('/', requireAuth, async (req, res) => {
   try {
     const { zoneId } = req.query;
-    let data: any[] = [];
+    
+    // Always fetch global baseline categories
+    const globalRows = await db.select().from(categories);
+    const globalList = globalRows.map((r) => {
+      const m = mergeRawRow(r);
+      return {
+        id: String(m.id),
+        name: typeof m.name === 'string' ? m.name : '',
+        color: typeof m.color === 'string' ? m.color : null,
+        isActive: m.isActive !== false,
+        description: typeof m.description === 'string' ? m.description : null,
+        isGlobal: true,
+      };
+    });
 
+    let zoneList: any[] = [];
     if (zoneId && zoneId !== 'all' && zoneId !== 'global') {
       const target = String(zoneId).toLowerCase();
       const withoutHyphen = target.replace(/-/g, '');
       const withHyphen = target.includes('-') ? target : target.replace(/^zone(\d+)$/, 'zone-$1');
 
-      // Fetch zone-specific categories
       const zoneRows = await db.select().from(zoneCategories).where(
         sql`lower(replace(${zoneCategories.rawData}->>'zoneId', '-', '')) = ${withoutHyphen} OR 
             lower(replace(${zoneCategories.rawData}->>'zone_id', '-', '')) = ${withoutHyphen} OR 
             lower(${zoneCategories.rawData}->>'zoneId') = ${withHyphen} OR 
             lower(${zoneCategories.rawData}->>'zone_id') = ${withHyphen}`
       );
-      data = zoneRows.map((r) => {
+      zoneList = zoneRows.map((r) => {
         const m = mergeRawRow(r);
         return {
           id: String(m.id),
@@ -33,23 +46,21 @@ router.get('/', requireAuth, async (req, res) => {
           isActive: m.isActive !== false,
           description: typeof m.description === 'string' ? m.description : null,
           zoneId: m.zoneId || m.zone_id || zoneId,
-        };
-      });
-    } else {
-      // Global HQ categories
-      const rows = await db.select().from(categories);
-      data = rows.map((r) => {
-        const m = mergeRawRow(r);
-        return {
-          id: String(m.id),
-          name: typeof m.name === 'string' ? m.name : '',
-          color: typeof m.color === 'string' ? m.color : null,
-          isActive: m.isActive !== false,
-          description: typeof m.description === 'string' ? m.description : null,
+          isGlobal: false,
         };
       });
     }
 
+    // Merge zone items with global baseline (zone items override global if same name)
+    const mergedMap = new Map<string, any>();
+    globalList.forEach((c) => {
+      if (c.name) mergedMap.set(c.name.toLowerCase().trim(), c);
+    });
+    zoneList.forEach((c) => {
+      if (c.name) mergedMap.set(c.name.toLowerCase().trim(), c);
+    });
+
+    const data = Array.from(mergedMap.values());
     data.sort((a, b) => a.name.localeCompare(b.name));
     res.json({ success: true, data });
   } catch (err) {
