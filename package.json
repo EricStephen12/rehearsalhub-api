@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "postinstall": "prisma generate",
+    "build": "prisma generate && tsc",
     "test": "tsx --test tenant.middleware.test.ts auth-contract.test.ts",
     "migrate:auth-internal": "tsx auth_internal.ts",
     "verify:rls": "tsx verify_rls.ts",

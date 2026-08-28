@@ -20,7 +20,7 @@ async function enrichMemberships<T extends MembershipRow>(rows: T[]) {
   if (ids.length === 0) return rows.map((r) => ({ ...r, profile: null }));
 
   const profileRows = await prisma.profile.findMany({ where: { id: { in: ids } } });
-  const byId = new Map(profileRows.map((p) => [p.id, p]));
+  const byId = new Map<string, any>(profileRows.map((p: any) => [p.id, p]));
   return rows.map((r) => {
     const p = byId.get(r.userId);
     return { ...r, profile: p ? { id: p.id, email: p.email, firstName: p.firstName, lastName: p.lastName, avatarUrl: p.avatarUrl, role: p.role } : null };
